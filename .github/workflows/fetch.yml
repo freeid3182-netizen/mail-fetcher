@@ -1,0 +1,30 @@
+name: Fetch mail
+
+# Runs on a schedule and hands new messages to the portal. It reads mailboxes and writes
+# nothing back to them. Only `schedule` and `workflow_dispatch` trigger it — a pull request
+# from a fork cannot run it and cannot see the secrets.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: fetch-mail
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Fetch and push
+        env:
+          PORTAL_URL: ${{ vars.PORTAL_URL }}
+          PUSH_KEY: ${{ secrets.PUSH_KEY }}
+          MAILBOXES: ${{ secrets.MAILBOXES }}
+        run: python fetch.py
