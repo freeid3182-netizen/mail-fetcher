@@ -28,6 +28,7 @@ import imaplib
 import json
 import os
 import sys
+import time
 import base64
 import urllib.request
 import urllib.error
@@ -43,8 +44,12 @@ BODY_CHARS = 40000
 
 
 def portal(url, key, action, payload=None, timeout=60):
+    # A CDN sits in front of the portal and was serving an outside caller a cached copy of
+    # an earlier GET: the worker kept being told the portal held nothing while it held 45.
+    # The portal's own no-cache headers did not stop it, so every call carries a fresh
+    # query of its own, exactly as the browser does.
     req = urllib.request.Request(
-        url + "?action=" + action,
+        url + "?action=" + action + "&_=" + str(int(time.time() * 1000)),
         data=None if payload is None else json.dumps(payload).encode("utf-8"),
         # The host's firewall answers "error code: 1010" to Python's own User-Agent —
         # it reads urllib as a bot. A name of our own gets through and is honest about
