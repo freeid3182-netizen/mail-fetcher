@@ -149,7 +149,9 @@ def fetch_box(cfg, seen_uid):
             text, atts = body_and_atts(msg)
             name, addr = email.utils.parseaddr(str(msg.get("From") or ""))
             out.append({
-                "box": box, "uid": str(uid),
+                # the mailbox's own address, so the portal can tell our side of a
+                # conversation from theirs without guessing from the To line
+                "box": box, "boxaddr": cfg["user"], "uid": str(uid),
                 "from": dec(name) or addr, "addr": addr,
                 "to": dec(msg.get("To")), "subject": dec(msg.get("Subject")),
                 "date": dec(msg.get("Date")), "body": text, "atts": atts,
