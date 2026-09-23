@@ -46,7 +46,11 @@ def portal(url, key, action, payload=None, timeout=60):
     req = urllib.request.Request(
         url + "?action=" + action,
         data=None if payload is None else json.dumps(payload).encode("utf-8"),
-        headers={"X-BL-PUSH": key, "Content-Type": "application/json"},
+        # The host's firewall answers "error code: 1010" to Python's own User-Agent —
+        # it reads urllib as a bot. A name of our own gets through and is honest about
+        # who is calling.
+        headers={"X-BL-PUSH": key, "Content-Type": "application/json",
+                 "User-Agent": "AtoZ-Mail-Fetcher/1.0"},
         method="GET" if payload is None else "POST",
     )
     with urllib.request.urlopen(req, timeout=timeout) as r:
