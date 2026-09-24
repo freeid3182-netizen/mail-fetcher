@@ -28,3 +28,14 @@ jobs:
           PUSH_KEY: ${{ secrets.PUSH_KEY }}
           MAILBOXES: ${{ secrets.MAILBOXES }}
         run: python fetch.py
+
+      # The portal reads what has just arrived. No mailbox is touched here and no key to
+      # Anthropic exists on this runner: the reading happens on the portal, one short
+      # request per message. It runs even if a mailbox failed above, because the messages
+      # already delivered still deserve to be read.
+      - name: Read the new mail
+        if: always()
+        env:
+          PORTAL_URL: ${{ vars.PORTAL_URL }}
+          PUSH_KEY: ${{ secrets.PUSH_KEY }}
+        run: python agent.py
