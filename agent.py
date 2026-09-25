@@ -48,6 +48,29 @@ def portal(url, key, action, payload=None, timeout=120):
         return json.loads(r.read().decode("utf-8", "replace"))
 
 
+def evening(url, key):
+    """One snapshot a day, after six in the evening, India time.
+
+    The runner keeps UTC and the office does not, so the hour is worked out rather than
+    assumed. The portal refuses a second snapshot for the same day by itself, so a run at
+    18:15 and another at 23:45 leave one copy, not two — this only decides when to ask.
+
+    It is stored, not sent. Nothing in this system can send anything yet.
+    """
+    ist = time.gmtime(time.time() + 5 * 3600 + 1800)
+    if ist.tm_hour < 18:
+        return
+    try:
+        r = portal(url, key, "recap_snapshot")
+        if r.get("already"):
+            print("evening recap for %s was already saved" % r.get("day"))
+        else:
+            print("evening recap saved for %s: %s" % (r.get("day"), r.get("in_a_line", "")))
+    except Exception as e:
+        # A missed snapshot is a missed convenience; it must not fail the run.
+        print("evening recap not saved: %s" % e)
+
+
 def main():
     url = os.environ.get("PORTAL_URL", "").strip()
     key = os.environ.get("PUSH_KEY", "").strip()
@@ -69,6 +92,7 @@ def main():
     todo = portal(url, key, "agent_next" + "&limit=%d" % MAX_PER_RUN).get("msgs") or []
     if not todo:
         print("nothing new to read")
+        evening(url, key)
         return 0
 
     spent = 0.0
@@ -109,6 +133,7 @@ def main():
         # A shared host answers better when it is not hit flat out.
         time.sleep(PAUSE)
 
+    evening(url, key)
     print("\nread %d message(s), %d failed, $%.4f spent" % (len(todo) - failed, failed, spent))
     if counts:
         print("filed as: " + ", ".join("%s %d" % (k, v) for k, v in sorted(counts.items())))
