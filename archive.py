@@ -261,6 +261,12 @@ def do_mailbox(mb, creds):
                                           "discovered": disc, "done": end})
                 print("%-16s %s %s — nothing new (%d in the month)" % (label, sl["folder"], sl["ym"], disc))
                 continue
+            # Counted for THIS slice. An earlier version printed the running total for the
+            # whole mailbox on every line, so each slice appeared to import everything the
+            # ones before it had — the figures were right only on the last line and the
+            # total. Per-slice is what a person reading this log is actually asking for.
+            slice_new = 0
+            slice_dup = 0
             for i in range(0, len(rows), BATCH):
                 chunk = rows[i:i + BATCH]
                 last = end and (i + BATCH >= len(rows))
@@ -268,13 +274,17 @@ def do_mailbox(mb, creds):
                     "mailbox_id": mb["mailbox_id"], "folder": sl["folder"], "ym": sl["ym"],
                     "uidvalidity": uv, "msgs": chunk,
                     "discovered": disc if i == 0 else 0, "done": last})
-                done += int(r.get("imported", 0))
+                slice_new += int(r.get("imported", 0))
+                slice_dup += int(r.get("duplicates", 0))
                 if r.get("write_failed"):
                     print("%-16s %s %s — portal could not store %s message(s): %s"
                           % (label, sl["folder"], sl["ym"], r["write_failed"],
                              (r.get("errors") or [""])[0]))
-            print("%-16s %s %s — %d read, %d new (%s)"
-                  % (label, sl["folder"], sl["ym"], len(rows), done,
+            done += slice_new
+            # The duplicate count is the idempotency signal: on a second pass over a slice
+            # that is already in, new should be 0 and duplicates should be everything.
+            print("%-16s %s %s — %d read, %d new, %d already in (%s)"
+                  % (label, sl["folder"], sl["ym"], len(rows), slice_new, slice_dup,
                      "complete" if end else "more next run"))
         return done, 0
     finally:
