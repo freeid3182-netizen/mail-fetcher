@@ -1,0 +1,45 @@
+name: Archive mail
+
+# The second road, beside fetch.yml. fetch.yml keeps filling the live tray exactly as it
+# always has; this fills the Phase 7A canonical archive for mailboxes the PORTAL cannot read
+# itself — today that means Yahoo, because Yahoo does not offer its mail scopes for self-serve
+# signup and port 993 is shut on the portal's host.
+#
+# It only ever READS a mailbox: opened read-only, fetched with BODY.PEEK. Nothing is marked
+# read, moved, deleted or sent.
+#
+# Hourly rather than every fifteen minutes: this is three months of history being filled in
+# bounded pieces, not a race for new mail. fetch.yml is what keeps the tray current.
+# Each run takes a bounded number of messages and the next run continues where it stopped,
+# so the backfill completes over several runs without any one of them being long.
+
+on:
+  schedule:
+    - cron: '20 * * * *'
+  workflow_dispatch:
+    inputs:
+      months:
+        description: 'How many months back to fill'
+        required: false
+        default: '3'
+
+concurrency:
+  group: archive-mail
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Fill the archive
+        env:
+          PORTAL_URL: ${{ vars.PORTAL_URL }}
+          PUSH_KEY: ${{ secrets.PUSH_KEY }}
+          MAILBOXES: ${{ secrets.MAILBOXES }}
+          ARCHIVE_MONTHS: ${{ github.event.inputs.months || '3' }}
+        run: python archive.py
