@@ -211,9 +211,22 @@ def read_slice(M, cfg, mb, sl, budget):
 
     rows = []
     for uid in todo:
-        typ, d = M.uid("fetch", str(uid), "(BODY.PEEK[])")   # PEEK: leaves \Seen alone
+        # INTERNALDATE as well as the message. The Date HEADER is written by the sender and
+        # can be malformed, missing or simply wrong; INTERNALDATE is when the server received
+        # it and is always there. 26 messages had already been filed under 0000-00 because
+        # their header would not parse, so this is not a precaution, it is a repair.
+        typ, d = M.uid("fetch", str(uid), "(INTERNALDATE BODY.PEEK[])")  # PEEK: leaves \Seen alone
         if typ != "OK" or not d or not isinstance(d[0], tuple):
             continue
+        internal = ""
+        try:
+            m = re.search(rb'INTERNALDATE "([^"]+)"', d[0][0] or b"")
+            if m:
+                t = imaplib.Internaldate2tuple(b'INTERNALDATE "' + m.group(1) + b'"')
+                if t:
+                    internal = time.strftime("%a, %d %b %Y %H:%M:%S +0000", t)
+        except Exception:
+            internal = ""
         msg = email.message_from_bytes(d[0][1])
         text, atts, from_html = body_and_atts(msg)
         name, addr = email.utils.parseaddr(str(msg.get("From") or ""))
@@ -225,7 +238,8 @@ def read_slice(M, cfg, mb, sl, budget):
             "from_name": dec(name), "from_addr": addr,
             "to": dec(msg.get("To")), "cc": dec(msg.get("Cc")), "bcc": dec(msg.get("Bcc")),
             "subject": dec(msg.get("Subject")), "date": dec(msg.get("Date")),
-            "size": len(d[0][1]), "body": text, "from_html": from_html, "atts": atts})
+            "size": len(d[0][1]), "body": text, "from_html": from_html, "atts": atts,
+            "internal_date": internal})
     return rows, uv, reached_end, discovered
 
 
