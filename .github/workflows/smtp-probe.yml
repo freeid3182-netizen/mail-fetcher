@@ -1,0 +1,29 @@
+name: Can Yahoo send from here
+
+# Read-only in the sense that matters: it opens an SMTP transaction and RESETS it, and never
+# sends DATA, so no message is ever created. The recipient in the envelope is our own mailbox,
+# so even a server that ignored RSET could not put mail in front of anybody else.
+#
+# It exists because the claim "Yahoo cannot send" was true of the PORTAL and had never been
+# tested on THIS machine, which is where Yahoo IMAP already works.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: smtp-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Probe
+        env:
+          MAILBOXES: ${{ secrets.MAILBOXES }}
+        run: python smtp_probe.py
