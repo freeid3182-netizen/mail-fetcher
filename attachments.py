@@ -206,6 +206,40 @@ def bytes_from_portal(a):
     return base64.b64decode(r["bytes"]), ""
 
 
+def pick_folder(M, want):
+    """The real folder name for INBOX or SENT on THIS server.
+
+    The same function archive.py uses, and for the same reason: the archive holds a canonical
+    name and no server has a folder called SENT. The server's own special-use flag is asked
+    for first, because that is the server telling us rather than us guessing from a name.
+    """
+    if want == "INBOX":
+        return "INBOX"
+    try:
+        typ, data = M.list()
+    except Exception:
+        return None
+    names = []
+    for row in (data or []):
+        if not isinstance(row, bytes):
+            continue
+        # rb"\\Sent" — a literal backslash then Sent, which is the IMAP special-use flag.
+        # rb"\Sent" would be the regex class \S, matching any non-whitespace, and would
+        # happily pick the wrong folder.
+        if re.search(rb"\\Sent", row, re.I):
+            m = re.search(rb'"([^"]+)"\s*$', row) or re.search(rb"(\S+)\s*$", row)
+            if m:
+                return m.group(1).decode("utf-8", "replace")
+        m = re.search(rb'"([^"]+)"\s*$', row) or re.search(rb"(\S+)\s*$", row)
+        if m:
+            names.append(m.group(1).decode("utf-8", "replace"))
+    for cand in ("Sent", "[Gmail]/Sent Mail", "Sent Items", "Sent Messages", "INBOX.Sent"):
+        for n in names:
+            if n.lower() == cand.lower():
+                return n
+    return None
+
+
 def bytes_from_imap(a, creds, conns):
     """Yahoo is IMAP, and the worker is the only thing that can reach it."""
     label = a.get("legacy_box") or ""
@@ -224,10 +258,16 @@ def bytes_from_imap(a, creds, conns):
         M.login(cfg["user"], cfg["pass"])
         conns[key] = M
     M = conns[key]
-    folder = "INBOX" if a["folder"] == "INBOX" else a["folder"]
-    typ, _ = M.select('"%s"' % folder, readonly=True)
+    # The archive stores the CANONICAL folder name — SENT — and no IMAP server has a folder
+    # called that. Yahoo says "Sent", Gmail says "[Gmail]/Sent Mail". archive.py already
+    # solved this by asking the server for its own special-use flag, and six attachments came
+    # back "could not open SENT" because this did not reuse it.
+    real = pick_folder(M, a["folder"])
+    if real is None:
+        return None, "this server has no %s folder" % a["folder"]
+    typ, _ = M.select('"%s"' % real, readonly=True)
     if typ != "OK":
-        return None, "could not open %s" % folder
+        return None, "could not open %s" % real
     typ, d = M.uid("fetch", str(a["uid"]), "(BODY.PEEK[])")
     if typ != "OK" or not d or not isinstance(d[0], tuple):
         return None, "the message is no longer at that UID"
