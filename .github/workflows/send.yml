@@ -1,0 +1,39 @@
+name: Send the portal's approved outbox
+
+# The fourth road, beside fetch, archive and attachments. Everything on it was approved by a
+# named person before this workflow could see it; the worker carries bytes and reports back.
+#
+# It runs on a schedule because a queued message should not wait for somebody to press a
+# button, and it is harmless when the outbox is empty: it asks, is told nothing is waiting,
+# and stops.
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      batch:
+        description: 'How many queued messages to carry this pass'
+        required: false
+        default: '5'
+
+concurrency:
+  group: send-outbox
+  cancel-in-progress: false
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Carry it
+        env:
+          PORTAL_URL: ${{ vars.PORTAL_URL }}
+          PUSH_KEY: ${{ secrets.PUSH_KEY }}
+          MAILBOXES: ${{ secrets.MAILBOXES }}
+          SEND_BATCH: ${{ github.event.inputs.batch || '5' }}
+        run: python send.py
