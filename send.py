@@ -32,8 +32,18 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-SMTP_HOST = "smtp.mail.yahoo.com"
 PORTS = (465, 587)
+
+
+def smtp_host(imap_host):
+    """The SMTP host that goes with a mailbox's IMAP host. Hardcoding Yahoo's was wrong the
+    moment a second kind of app-password mailbox existed: the worker authenticates to
+    whatever host its own credentials name, so the host is derived from the credentials
+    rather than assumed."""
+    h = str(imap_host or "").strip().lower()
+    if h.startswith("imap."):
+        return "smtp." + h[5:]
+    return h or "smtp.mail.yahoo.com"
 TIMEOUT = 45
 
 
@@ -61,17 +71,17 @@ def creds(boxes, label, email):
     return None
 
 
-def deliver(user, password, sender, rcpts, raw):
+def deliver(host, user, password, sender, rcpts, raw):
     """Returns (ok, detail). Tries 465, then 587: a runner's egress can differ by port and
     there is no reason to fail on the first one when the second is standing right there."""
     last = ""
     for port in PORTS:
         try:
             if port == 465:
-                srv = smtplib.SMTP_SSL(SMTP_HOST, port, timeout=TIMEOUT,
+                srv = smtplib.SMTP_SSL(host, port, timeout=TIMEOUT,
                                        context=ssl.create_default_context())
             else:
-                srv = smtplib.SMTP(SMTP_HOST, port, timeout=TIMEOUT)
+                srv = smtplib.SMTP(host, port, timeout=TIMEOUT)
                 srv.ehlo()
                 srv.starttls(context=ssl.create_default_context())
             srv.ehlo()
@@ -82,7 +92,7 @@ def deliver(user, password, sender, rcpts, raw):
             srv.quit()
             if refused:
                 return False, "the server refused %d recipient(s) on %d" % (len(refused), port)
-            return True, "accepted on %d" % port
+            return True, "accepted by %s on %d" % (host, port)
         except Exception as e:
             last = "%s on %d: %s" % (type(e).__name__, port, str(e)[:160])
             try:
@@ -123,7 +133,9 @@ def main():
             failed += 1
             continue
         data = base64.b64decode(m["raw_b64"])
-        ok, detail = deliver(str(c["user"]), str(c["pass"]), m["email"], m["envelope_to"], data)
+        host = smtp_host(c.get("host"))
+        ok, detail = deliver(host, str(c["user"]), str(c["pass"]),
+                             m["email"], m["envelope_to"], data)
         # Reported BEFORE the next message is attempted, so a crash leaves at most one
         # message whose outcome is unknown rather than a batch of them.
         r = api(url, key, "mail7_send_done",

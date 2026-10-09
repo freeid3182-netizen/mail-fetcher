@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 mailboxes.json
+*.bak
+mailboxes.json.bak
