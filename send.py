@@ -51,12 +51,31 @@ def api(url, key, action, body=None, **qs):
     q = urllib.parse.urlencode(dict(action=action, **qs))
     req = urllib.request.Request(url + "?" + q, method="POST" if body is not None else "GET")
     req.add_header("X-BL-PUSH", key)
+    # A NAME OF OUR OWN, and this is not cosmetic. The host's firewall refuses Python's
+    # default User-Agent with a 403 — it reads urllib as a bot. fetch.py has carried a
+    # comment saying so since Phase 3 and archive.py and attachments.py both set one; this
+    # script did not, so every scheduled run died on HTTP 403 before it could even read the
+    # outbox. Yahoo sending was therefore never working at all, however correct the portal
+    # side was, and nothing noticed because a queued message simply stayed queued.
+    req.add_header("User-Agent", "AtoZ-Mail-Send/1.0")
     data = None
     if body is not None:
         data = json.dumps(body).encode("utf-8")
         req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, data, timeout=120) as r:
-        return json.loads(r.read().decode("utf-8", "replace"))
+    try:
+        with urllib.request.urlopen(req, data, timeout=120) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        # A stack trace in a scheduled run is a thing nobody reads. The status and the first
+        # of the body is what says whether this is a key problem, a firewall problem or the
+        # portal refusing on purpose.
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", "replace")[:300]
+        except Exception:
+            pass
+        raise SystemExit("the portal answered HTTP %s to %s%s"
+                         % (e.code, action, (": " + detail) if detail else ""))
 
 
 def creds(boxes, label, email):

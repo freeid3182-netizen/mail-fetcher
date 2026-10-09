@@ -15,7 +15,12 @@ name: Archive mail
 
 on:
   schedule:
-    - cron: '20 * * * *'
+    # EVERY FIFTEEN MINUTES, not hourly. Yahoo cannot be read by the portal at all, so this
+    # schedule IS how fresh Yahoo mail is on the Email page — hourly meant a Yahoo message
+    # could sit unseen for an hour while Gmail refreshed the moment somebody opened the page.
+    # The extra runs are nearly free: the plan hands over a high-water UID, so a mailbox with
+    # nothing new costs one IMAP search per folder and no fetches at all.
+    - cron: '5,20,35,50 * * * *'
   workflow_dispatch:
     inputs:
       months:
