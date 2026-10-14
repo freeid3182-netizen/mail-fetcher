@@ -14,8 +14,11 @@ reads: from here.
 WHAT IT MUST NOT DO, and does not:
   - alter the bytes. The approval is a hash of them, so a changed byte is an unapproved
     message. They go out exactly as received.
-  - send twice. Every message is reported back before the next is attempted, and the portal
-    refuses a second result for a settled send.
+  - send twice. The portal CLAIMS a message when it hands it over, so it is not offered
+    again while the claim holds; every message is reported back before the next is
+    attempted; and the portal refuses a second result for a settled send. Before the
+    claim existed this script sent one message repeatedly for four days, because a
+    report that failed after delivery left the row QUEUED and killed the run.
   - invent a recipient. The envelope comes from the portal, not from parsing the message.
 
   MAILBOXES   the same JSON list the other scripts use; `legacy_box` matches `box`
@@ -45,9 +48,22 @@ def smtp_host(imap_host):
         return "smtp." + h[5:]
     return h or "smtp.mail.yahoo.com"
 TIMEOUT = 45
+def _give_up(msg, fatal):
+    """THE REPORT MUST NOT BE ABLE TO KILL THE RUN.
+
+    SystemExit on the way back was the second half of the duplicate-send bug: the message
+    went out over SMTP, the report raised, the script died, and the portal still had the
+    row as QUEUED for the next run to send again. Reading the outbox may still be fatal —
+    there is nothing to lose at that point — but reporting an outcome never is."""
+    if fatal:
+        raise SystemExit(msg)
+    print("  !! could not report: %s" % msg)
+    return {"_unreported": True}
 
 
-def api(url, key, action, body=None, **qs):
+
+
+def api(url, key, action, body=None, fatal=True, **qs):
     q = urllib.parse.urlencode(dict(action=action, **qs))
     req = urllib.request.Request(url + "?" + q, method="POST" if body is not None else "GET")
     req.add_header("X-BL-PUSH", key)
@@ -66,16 +82,21 @@ def api(url, key, action, body=None, **qs):
         with urllib.request.urlopen(req, data, timeout=120) as r:
             return json.loads(r.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as e:
-        # A stack trace in a scheduled run is a thing nobody reads. The status and the first
-        # of the body is what says whether this is a key problem, a firewall problem or the
-        # portal refusing on purpose.
+        # A stack trace in a scheduled run is a thing nobody reads. The status and the
+        # first of the body is what says whether this is a key problem, a firewall
+        # problem or the portal refusing on purpose.
         detail = ""
         try:
             detail = e.read().decode("utf-8", "replace")[:300]
         except Exception:
             pass
-        raise SystemExit("the portal answered HTTP %s to %s%s"
-                         % (e.code, action, (": " + detail) if detail else ""))
+        msg = ("the portal answered HTTP %s to %s%s"
+               % (e.code, action, (": " + detail) if detail else ""))
+        return _give_up(msg, fatal)
+    except urllib.error.URLError as e:
+        # A timeout or a dropped connection. Same danger as a 4xx and it was not handled
+        # at all, so it surfaced as an unhandled traceback and killed the run.
+        return _give_up("could not reach the portal for %s: %s" % (action, str(e)[:200]), fatal)
 
 
 def creds(boxes, label, email):
@@ -146,7 +167,7 @@ def main():
         if c is None:
             # Reported as a failure rather than left in the queue for ever. A message nobody
             # can send is a thing somebody needs to be told about.
-            api(url, key, "mail7_send_done", {"send_id": sid, "ok": False,
+            api(url, key, "mail7_send_done", fatal=False, body={"send_id": sid, "ok": False,
                 "error": "the worker holds no credentials for that mailbox"})
             print("  %s  NO CREDENTIALS" % sid)
             failed += 1
@@ -157,10 +178,21 @@ def main():
                              m["email"], m["envelope_to"], data)
         # Reported BEFORE the next message is attempted, so a crash leaves at most one
         # message whose outcome is unknown rather than a batch of them.
-        r = api(url, key, "mail7_send_done",
-                {"send_id": sid, "ok": ok,
-                 "provider_message_id": ("smtp:" + detail) if ok else "",
-                 "error": "" if ok else detail})
+        r = api(url, key, "mail7_send_done", fatal=False,
+                body={"send_id": sid, "ok": ok,
+                      "provider_message_id": ("smtp:" + detail) if ok else "",
+                      "error": "" if ok else detail})
+        if r.get("_unreported"):
+            # DELIVERED AND UNREPORTED is the dangerous state, so it is said loudly and
+            # the run stops rather than carrying on to the next message. The portal has
+            # the row claimed; its lease decides what happens next, and its attempt cap
+            # is what stops this from becoming a loop.
+            print("  %s  %s BUT THE PORTAL WAS NOT TOLD — it is claimed there and will"
+                  % (sid, "SENT" if ok else "FAILED"))
+            print("     not be handed out again for the length of the lease.")
+            if ok:
+                print("     THIS MESSAGE HAS BEEN DELIVERED. Do not re-queue it by hand.")
+            return 1
         print("  %s  %s  %s%s" % (sid, "SENT" if ok else "FAILED", detail,
                                   "  (already settled)" if r.get("already") else ""))
         sent += 1 if ok else 0
