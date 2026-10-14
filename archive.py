@@ -67,6 +67,27 @@ def portal(action, payload=None, timeout=120):
         method="GET" if payload is None else "POST")
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
+def tell_portal(mb, ok, err=""):
+    """Say whether this mailbox let us in.
+
+    atozengineerings@yahoo.com stopped accepting its app password and this script did
+    exactly what it does now minus this call: caught the exception, printed it into a CI
+    log, and told the portal nothing. No Yahoo mail arrived from it for days and the only
+    place the reason existed was a log nobody reads.
+
+    Never fatal. A diagnosis that cannot be delivered must not stop the mailboxes that
+    ARE working from being archived."""
+    try:
+        portal("mail7_worker_trouble", {
+            "mailbox_id": mb.get("mailbox_id", ""),
+            "legacy_box": mb.get("legacy_box", mb.get("box", "")),
+            "email": mb.get("email", ""),
+            "ok": bool(ok), "error": str(err)[:300]})
+    except Exception as e:
+        print("  (could not tell the portal about %s: %s)"
+              % (mb.get("email", "?"), str(e)[:120]))
+
+
 
 
 def dec(raw):
@@ -339,9 +360,14 @@ def main():
             n, f = do_mailbox(mb, creds)
             total += n
             failed += f
+            # Reported either way: a mailbox that started working again must stop being
+            # shown as broken, and only this run knows that it did.
+            tell_portal(mb, True)
         except Exception as e:
-            # One bad mailbox must not stop the others. A wrong app password is the usual one.
+            # One bad mailbox must not stop the others. A wrong app password is the usual
+            # one — and now it reaches the Email page instead of only this log.
             print("%-16s FAILED: %s" % (mb.get("email", "?"), e))
+            tell_portal(mb, False, e)
             failed += 1
     print("archived %d new message(s); %d mailbox(es) failed" % (total, failed))
     return 1 if failed and total == 0 else 0
