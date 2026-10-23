@@ -39,3 +39,28 @@ jobs:
           PORTAL_URL: ${{ vars.PORTAL_URL }}
           PUSH_KEY: ${{ secrets.PUSH_KEY }}
         run: python agent.py
+
+      # PHASE 9. THE MONITOR'S SCHEDULER, and it is this step.
+      #
+      # action=mon_sweep has existed on the portal since Stage C step 4 and, until this
+      # step, NOTHING CALLED IT — the Phase 9 audit grepped both repositories and found no
+      # caller, so the alert engine had never swept on a schedule. It rides along here
+      # rather than in a workflow of its own because this one already runs every fifteen
+      # minutes with the key and the URL it needs: no new schedule, no new secret, and no
+      # VPS. The comment beside mon_sweep in api.php asked for exactly this.
+      #
+      # Detection runs on every pass, around the clock, because it is arithmetic on dates
+      # inside PHP and costs nothing. WHETHER ANYTHING IS SENT is the portal's decision and
+      # not this file's: working hours, the daily limit, the permission each finding needs,
+      # the repeat clock and a re-check of every line against the live records all happen
+      # there. Putting any of it here would be a second set of rules to disagree with the
+      # first.
+      #
+      # `if: always()` and the script's own refusal to fail: mail is this workflow's job and
+      # the sweep is a passenger. A broken sweep must not stop the mail.
+      - name: Sweep for things worth noticing
+        if: always()
+        env:
+          PORTAL_URL: ${{ vars.PORTAL_URL }}
+          PUSH_KEY: ${{ secrets.PUSH_KEY }}
+        run: python monitor.py
