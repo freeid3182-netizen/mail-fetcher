@@ -28,9 +28,18 @@ Configuration, from the environment, exactly as fetch.py and agent.py take it:
   MON_ONLY     optional: sweep one detector only (overdue, exceptions, tasks)
 
 WHAT IT PRINTS, and why it prints it. A log is a place other people read, so no business
-figure and no client name goes into it: only counts, states and reasons. "sent 1" means
-Telegram ACCEPTED one message. It does not mean anybody read it, and this file will not say
-delivered.
+figure and no client name goes into it. That promise used to be a hope: three prints passed
+free text straight through — a detector's exception message, a raw dump of an unreadable
+reply, and the provider's own error string — and any of the three can quote a value it choked
+on. A security review of the first push said so and it was right.
+
+So what is printed now is only what this script itself controls: counts, the three fixed
+delivery states, and the NAME of a detector that threw. Every reason, every message and every
+raw reply lives on the portal, behind a login, where mon_deliveries and the sweep record
+already keep them.
+
+"sent 1" means Telegram ACCEPTED one message. It does not mean anybody read it, and this file
+will not say delivered.
 """
 
 import json
@@ -79,7 +88,13 @@ def main():
         return 0
 
     if not isinstance(r, dict) or not r.get("ok"):
-        print("monitor: the sweep did not report ok: %s" % json.dumps(r)[:300])
+        # THE KEYS, NOT THE VALUES. A reply this script cannot read may contain anything the
+        # portal was in the middle of, and this log is a place other people read. Which keys
+        # came back is enough to tell a wrong action from a refusal from a crash; the values
+        # are on the portal, behind a login.
+        print("monitor: the sweep did not report ok. Keys in the reply: %s"
+              % (",".join(sorted(r.keys())) if isinstance(r, dict) else type(r).__name__))
+        print("monitor: open the portal to see why — the reason is not printed here.")
         return 0
 
     d = r.get("delivery") or {}
@@ -91,9 +106,16 @@ def main():
     # nothing else would read as "nothing to report" when it means "one engine is broken".
     errs = r.get("errors") or []
     if errs:
-        print("monitor: A DETECTOR FAILED, so the list is PARTIAL rather than complete:")
+        # WHICH ENGINE BROKE, NOT WHAT IT SAID. The portal formats these as
+        # "<detector>: <exception message>", and an exception message can quote whatever value
+        # it choked on — a figure, a client name. The detector NAME is the operationally vital
+        # half and carries nothing about the business, so that is the half printed. The
+        # message is in the portal's own sweep record.
+        print("monitor: A DETECTOR FAILED, so the list is PARTIAL rather than complete.")
         for e in errs[:5]:
-            print("  - %s" % str(e)[:200])
+            name = str(e).split(":", 1)[0].strip()[:40]
+            print("  - detector '%s' threw (reason in the portal, not in this log)"
+                  % "".join(c for c in name if c.isalnum() or c in "_- "))
 
     if d.get("sent"):
         print("monitor: %s message(s) ACCEPTED by Telegram for %s recipient(s)%s"
@@ -112,10 +134,17 @@ def main():
         print("monitor: %s earlier notification(s) could not be confirmed as sent and are "
               "waiting for a person. They are NOT being resent: an ambiguous result resent "
               "is how one alert becomes four." % d.get("needs_review"))
+    # THE STATE AND THE ATTEMPT COUNT, AND NOT THE REASON. The state is one of three fixed
+    # words this script knows; the reason is built from the provider's own error text, which
+    # can name a chat. The reason is in mon_deliveries, which is gated on MAIL_CONFIG, and
+    # that is where it belongs.
     for o in (d.get("outcomes") or []):
-        if str(o.get("state")) != "ACCEPTED":
-            print("monitor: a message was not accepted (%s, attempt %s): %s"
-                  % (o.get("state"), o.get("attempts"), str(o.get("why"))[:160]))
+        st = str(o.get("state") or "")
+        if st != "ACCEPTED":
+            print("monitor: a message was not accepted — %s after %s attempt(s). "
+                  "The reason is on the portal's delivery log."
+                  % (st if st in ("FAILED", "UNKNOWN") else "an unrecognised state",
+                     int(o.get("attempts") or 0)))
     return 0
 
 
