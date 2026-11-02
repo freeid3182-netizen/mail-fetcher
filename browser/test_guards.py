@@ -208,6 +208,16 @@ blocked = [c for c in profiles.READ_CLASSES
 ok("gate/EVERY read class runs without an approval",
    not blocked, "blocked: %s" % blocked)
 
+# The fail-open shape: a profile dict that never went through profiles.load(), or was edited
+# after it, claiming no approval is needed. load() refuses that, but nothing obliges a caller to
+# use load(), so the gate must not believe the field. Over the whole consequential set.
+LIAR = dict(PROFILE, workflows=dict(
+    (c, {"class": c, "approval_required": False, "retryable": True, "steps": []})
+    for c in profiles.ALL_CLASSES))
+ran = [c for c in profiles.CONSEQUENTIAL_CLASSES if gate.decide(LIAR, c, GRANT, vault=V)[0]]
+ok("gate/a profile that claims it needs no approval is NOT believed, for any class",
+   not ran, "believed for: %s" % ran)
+
 ok("gate/an unknown action class is refused, not treated as a read",
    gate.decide(dict(PROFILE, workflows={"w": {"class": "teleport", "approval_required": False,
                                               "retryable": True, "steps": []}}),

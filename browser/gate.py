@@ -31,8 +31,15 @@ def decide(profile, workflow, grant, vault=None,
     facts = {"portal": profile.get("slug", ""), "workflow": workflow, "action_class": "",
              "needs_approval": False, "approval_ref": "", "credentials": []}
 
-    ok, cls, needs_approval, why = profiles.allowed(profile, workflow, grant)
+    ok, cls, _profile_says, why = profiles.allowed(profile, workflow, grant)
     facts["action_class"] = cls
+
+    # WHETHER AN APPROVAL IS NEEDED IS DERIVED FROM THE CLASS, NOT READ FROM THE PROFILE.
+    # profiles.load() already refuses a profile that sets approval_required contrary to its
+    # class -- but nothing obliges a caller to have gone through load(), and a dict that skipped
+    # it, or was edited after it, would arrive here saying "no approval needed" and be believed.
+    # One line, and the fail-open shape stops existing. Flagged by the commit security review.
+    needs_approval = cls in profiles.CONSEQUENTIAL_CLASSES
     facts["needs_approval"] = bool(needs_approval)
     if not ok:
         return False, why, facts
