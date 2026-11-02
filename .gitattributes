@@ -1,0 +1,3 @@
+# The system gitconfig has core.autocrlf=true. Without this, every file committed from
+# Windows is rewritten on checkout, and this project's signature failure is an invisible byte.
+* -text

@@ -34,6 +34,10 @@
     <option value="2026-09">September 2026</option>
     <option value="2026-10">October 2026</option>
   </select>
+  <!-- A password field, purely so the screenshot-masking test has something real to mask.
+       It posts nowhere and holds no secret. -->
+  <label for="pw">Password</label>
+  <input id="pw" name="password" type="password" aria-label="Password">
   <button id="search" type="button" aria-label="Search"
           onclick="document.getElementById('status').textContent='3 purchase orders found';
                    document.title='Search done'">Search</button>

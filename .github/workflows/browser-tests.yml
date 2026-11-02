@@ -28,6 +28,10 @@ jobs:
           python -m playwright install --with-deps chromium
       - name: Targeted tests for the browser core and portal profiles
         run: python browser/test_browser.py
+      # Needs no browser, but runs here anyway: these are the refusals, and a refusal that only
+      # works on the owner's machine is not a control.
+      - name: Targeted tests for the guards (credentials, approval, audit, files)
+        run: python browser/test_guards.py
       - name: Keep the evidence when it fails
         if: failure()
         uses: actions/upload-artifact@v4

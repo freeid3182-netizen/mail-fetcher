@@ -139,7 +139,7 @@ class BrowserTask(object):
     """
 
     def __init__(self, headless=True, task_id="t0", download_dir="downloads",
-                 budget=None, viewport=(1366, 900), profile=None, audit=None):
+                 budget=None, viewport=(1366, 900), profile=None, audit=None, vault=None):
         self.headless = bool(headless)
         self.task_id = str(task_id)
         self.download_dir = download_dir
@@ -147,6 +147,10 @@ class BrowserTask(object):
         self.viewport = viewport
         self.profile = profile
         self._audit = audit
+        # Redaction happens when a result is RECORDED, not when someone remembers to ask for
+        # it. Every path out of this class goes through _record, so a credential that reached a
+        # page cannot reach the log, the audit row or a failure message.
+        self._vault = vault
         self._pw = None
         self.browser = None
         self.ctx = None
@@ -187,6 +191,13 @@ class BrowserTask(object):
             pass
 
     def _record(self, res):
+        if self._vault is not None:
+            # The ActionResult itself is scrubbed, not a copy of it, so the caller cannot be
+            # handed an unredacted object by reading the return value instead of the log.
+            res.detail = self._vault.redact(res.detail)
+            res.url = self._vault.redact(res.url)
+            res.title = self._vault.redact(res.title)
+            res.evidence = self._vault.redact_deep(res.evidence)
         self.log.append(res.as_dict())
         if self._audit:
             try:
@@ -307,12 +318,31 @@ class BrowserTask(object):
                                          (ax or {}).get("name", "")[:120] if ax else "empty",
                                          self._url(), self._title(), evidence=[ax or {}]))
 
-    def eyes_screenshot(self, name="shot", full_page=True):
+    def eyes_screenshot(self, name="shot", full_page=True, mask_sensitive=True):
+        """A screenshot with the password, OTP and captcha fields MASKED BEFORE THE PIXELS
+        EXIST.
+
+        Masking afterwards would mean the unmasked image existed, briefly, on a runner whose
+        artifacts get uploaded. Playwright's own `mask` paints over the elements as it captures,
+        so there is no moment at which the secret is on disk. The captcha field is masked too --
+        not to hide it from the owner, but because a captcha image in an artifact is the sort of
+        thing that invites someone to build a solver, and solving them is out of scope.
+        """
         self.budget.spend()
         path = os.path.join(self.download_dir,
                             safe_filename(name + ".png", self.task_id, "shot.png"))
+        masks = []
+        if mask_sensitive:
+            import vault as _v
+            for sel in _v.SENSITIVE_SELECTORS:
+                try:
+                    loc = self.page.locator(sel)
+                    if loc.count():
+                        masks.append(loc)
+                except PWError:
+                    continue
         try:
-            self.page.screenshot(path=path, full_page=full_page)
+            self.page.screenshot(path=path, full_page=full_page, mask=masks or None)
         except PWError as e:
             return self._fail("take a screenshot", str(e)[:200])
         size = os.path.getsize(path) if os.path.exists(path) else 0

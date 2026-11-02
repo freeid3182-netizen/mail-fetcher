@@ -273,6 +273,18 @@ else:
         ok("eyes/the accessibility tree comes back", b.eyes_tree().ok)
         rs = b.eyes_screenshot("portal")
         ok("eyes/a screenshot exists and has bytes", rs.ok and os.path.exists(rs.evidence[0]))
+
+        # Masking is proved by the PIXELS, not by the argument having been passed. A password is
+        # typed, then the same page is captured masked and unmasked: if the two images are
+        # identical, nothing was painted over and the mask is decoration.
+        b.hands_type("not-a-real-password", name="Password")
+        masked = b.eyes_screenshot("masked", mask_sensitive=True)
+        plain = b.eyes_screenshot("plain", mask_sensitive=False)
+        mb = open(masked.evidence[0], "rb").read() if masked.ok else b""
+        pb = open(plain.evidence[0], "rb").read() if plain.ok else b""
+        ok("eyes/the sensitive fields are MASKED IN THE PIXELS, not after the fact",
+           masked.ok and plain.ok and len(mb) > 0 and mb != pb,
+           "masked %d bytes, plain %d bytes" % (len(mb), len(pb)))
         ok("eyes/page state can be asked for", b.eyes_state().ok)
 
         # ---- hands: the headline property
