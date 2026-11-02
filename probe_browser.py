@@ -37,8 +37,13 @@ def main():
         say("read title", bool(pg.title()), pg.title())
 
         # EYES, structural: visible text, headings, the DOM, and the accessibility tree.
-        say("visible text", "Example Domain" in pg.inner_text("body"),
-            pg.inner_text("body").split("\n")[0])
+        # NOT a check on example.com's wording. It changed under the first run of this probe --
+        # the body no longer carries the old heading -- and asserting a third party's copy is
+        # the "do not assume page structure" trap the contract names. What is being proved is
+        # that real text comes back at all, so: substantial, and about this page.
+        _txt = pg.inner_text("body")
+        say("visible text", len(_txt.strip()) > 40 and "domain" in _txt.lower(),
+            "%d chars" % len(_txt.strip()))
         say("dom query", len(pg.query_selector_all("a")) >= 1,
             "%d links" % len(pg.query_selector_all("a")))
         ax = pg.accessibility.snapshot()
