@@ -84,8 +84,12 @@ class Portal(object):
         return self._opener(action, b if action != "btask_next" else None, query)
 
     # ---- the doors, one method each ---------------------------------------------
-    def next_tasks(self, limit=3):
-        r = self._opener("btask_next", None, {"limit": limit})
+    def next_tasks(self, limit=3, stage="queued"):
+        """What there is to do. `stage` is "queued" (new work) or "approved" (a person has
+        decided, and exactly one action may now be carried out). They are separate stages
+        because an APPROVED task must never be picked up by the ordinary loop and run again
+        from the beginning -- its safe steps are already done and its checkpoint says so."""
+        r = self._opener("btask_next", None, {"limit": limit, "stage": stage})
         return list(r.get("tasks") or [])
 
     def claim(self, task_id):

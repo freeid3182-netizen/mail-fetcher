@@ -72,6 +72,7 @@ class FakePortal(object):
     def __init__(self):
         self.said = []
         self.approved = False
+        self.approved_payload = None
         self.token = "tok-" + "f" * 28
         self.pended = None
         self.files = []
@@ -82,14 +83,23 @@ class FakePortal(object):
             return {"ok": True, "tasks": list(self.queue)}
         if action == "btask_pend":
             self.pended = body
+            # What the person will be shown is what the portal stores, so it is also what the
+            # resume will be handed back. Keeping it here is what makes the page-changed
+            # assertion below a real comparison rather than a tautology.
+            self.approved_payload = dict(body.get("payload") or {})
             return {"ok": True, "task": {"state": "WAITING_FOR_APPROVAL"}}
         if action == "btask_claim_exec":
             if not self.approved:
                 return {"ok": False, "code": "NOT_APPROVED",
                         "error": "this task is WAITING_FOR_APPROVAL and no approved action "
                                  "may be carried out"}
-            return {"ok": True, "exec_token": self.token, "action": "Looks Important",
-                    "action_class": "submit", "payload": {"doc": "X"}}
+            # The payload the PERSON approved, which is what the resume must find the page
+            # still matching. `action` is the workflow's name, as api.php sends it -- and it is
+            # deliberately NOT the name of any control, because the resume no longer reads a
+            # control name out of this response.
+            return {"ok": True, "exec_token": self.token, "action": "acknowledge_order",
+                    "action_class": "submit",
+                    "payload": dict(self.approved_payload or {})}
         if action == "btask_file":
             self.files.append(body.get("provenance"))
             return {"ok": True, "task": {"state": "EXECUTING"}}
@@ -147,7 +157,11 @@ SUPPLIER = {
             "class": "submit",
             "means": "acknowledge the order to the supplier",
             "steps": [{"do": "goto", "url": BASE + "/index.html"},
-                      {"do": "type", "text": "6204019486", "name": "PO number"}]},
+                      {"do": "type", "text": "6204019486", "name": "PO number"}],
+            # The one control a person's approval authorises, named HERE. The fixture's
+            # "Looks Important" is perfectly clickable and changes nothing, so this workflow
+            # also exercises the outcome that cannot be confirmed.
+            "act": {"do": "click", "role": "button", "name": "Looks Important"}},
         "break_here": {
             "class": "inspect",
             "means": "a workflow whose second step cannot succeed",
@@ -220,13 +234,29 @@ ok("stop/and what the person is SHOWN is what was handed over",
 ok("stop/the safe preparation really did happen first",
    fp.names().count("btask_checkpoint") == 2, str(fp.names()))
 
+task["workflow"] = "acknowledge_order"      # as api.php records it when the worker pends
+
 # THE PROPERTY. Without the portal's token there is no road to the action.
-line = agent.resume_approved(a, task["id"])
+line = agent.resume_approved(a, task)
 ok("token/with no approval, the action is NOT carried out",
    "not carried out" in line and "btask_result" not in fp.names(), line)
 
+# THE FIRST THING THE SECURITY REVIEW FOUND. The resume used to call eyes_where on a fresh,
+# blank browser and call that revalidation. It must go BACK to the page the action was approved
+# on -- and if that page is not what was approved, press nothing.
+moved = dict(fp.approved_payload or {})
+fp.approved_payload = dict(moved, page_url=BASE + "/other.html")
 fp.approved = True
-line = agent.resume_approved(a, task["id"])
+line = agent.resume_approved(a, task)
+rep = fp.body("btask_result")[-1]
+ok("page/if the page is not the one that was approved, NOTHING is pressed",
+   "not carried out" in line and rep["outcome"] == "FAILED"
+   and "NOTHING was carried out" in rep["detail"], json.dumps(rep)[:200])
+ok("page/and it says the thing must be approved again, rather than retrying",
+   "approved again" in rep["detail"], rep["detail"][:120])
+
+fp.approved_payload = moved
+line = agent.resume_approved(a, task)
 ok("token/once a person has approved, it is carried out once and reported",
    "btask_result" in fp.names(), line)
 rep = fp.body("btask_result")[-1]
@@ -234,15 +264,60 @@ ok("token/the report carries the one-shot token it was given",
    rep["exec_token"] == fp.token, str(rep)[:140])
 ok("token/and the outcome is one of the closed set",
    rep["outcome"] in ("COMPLETED", "PARTIAL", "FAILED", "UNKNOWN"), rep["outcome"])
+# Kept, because later assertions push more reports onto the list and this is the one that
+# matters: the report from the run that actually pressed the control.
+REP_PRESSED = rep
+# The host is checked by going back through hands_goto with the profile's host expected.
+# "localhost" and "127.0.0.1" serve the same fixture and are DIFFERENT HOSTS, so an approved
+# url on the wrong one must be refused before anything is pressed.
+fp.approved_payload = dict(moved, page_url="http://localhost:%d/index.html" % PORT)
+fp.approved = True
+line = agent.resume_approved(a, task)
+rep = fp.body("btask_result")[-1]
+ok("page/an approved url on a host the profile does not list is refused",
+   "not carried out" in line and rep["outcome"] == "FAILED", json.dumps(rep)[:200])
+fp.approved_payload = moved
+
+# THE SECOND THING THE REVIEW FOUND. The control pressed used to be named by the portal's JSON
+# response. It is named by the profile now, and this response's `action` is the workflow name,
+# which is not a control on the page at all.
+AGENT_SRC = open(os.path.join(HERE, "agent.py"), encoding="utf-8").read()
+ok("control/the control is named in the PROFILE, never in a response",
+   'go.get("action")' not in AGENT_SRC and 'act.get("name")' in AGENT_SRC)
+
+noact = dict(SUPPLIER)
+noact["workflows"] = {"acknowledge_order": {
+    "class": "submit", "steps": [], "means": "no act declared"}}
+refused_classes = []
+for cls in profiles.CONSEQUENTIAL_CLASSES:
+    try:
+        profiles.load(dict(SUPPLIER, workflows={"w": {"class": cls, "steps": []}}))
+    except profiles.ProfileError as e:
+        if "act" in str(e):
+            refused_classes.append(cls)
+ok("control/EVERY consequential class must declare the step it would carry out",
+   sorted(refused_classes) == sorted(profiles.CONSEQUENTIAL_CLASSES),
+   "loaded without one: %s" % sorted(set(profiles.CONSEQUENTIAL_CLASSES)
+                                     - set(refused_classes)))
+read_with_act = []
+for cls in profiles.READ_CLASSES:
+    try:
+        profiles.load(dict(SUPPLIER, workflows={"w": {
+            "class": cls, "steps": [], "act": {"do": "click", "name": "Pay"}}}))
+        read_with_act.append(cls)
+    except profiles.ProfileError:
+        pass
+ok("control/and a READ workflow may not declare one at all",
+   not read_with_act, "allowed an act: %s" % read_with_act)
 
 # ============================================================ 4. UNCONFIRMED IS UNKNOWN
 # The fixture's "Looks Important" button is perfectly clickable and changes nothing, which the
 # core calls a failure -- so the approved action cannot be confirmed. That must be UNKNOWN.
 ok("unknown/an approved action that cannot be confirmed is UNKNOWN, never FAILED",
-   rep["outcome"] == "UNKNOWN" and "could not be confirmed" in rep["detail"],
-   json.dumps(rep)[:200])
+   REP_PRESSED["outcome"] == "UNKNOWN"
+   and "could not be confirmed" in REP_PRESSED["detail"], json.dumps(REP_PRESSED)[:200])
 ok("unknown/and the words do not claim it failed",
-   "failed" not in rep["detail"].lower(), rep["detail"][:120])
+   "failed" not in REP_PRESSED["detail"].lower(), REP_PRESSED["detail"][:120])
 
 # ============================================================ 5. A FAILED STEP ENDS THE RUN
 a, fp, task = make(SUPPLIER, "break here please", ["inspect"])

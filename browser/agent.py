@@ -299,48 +299,110 @@ class Agent(object):
 
 # ---- the approved half: a second run, after a person has decided --------------------
 
-def resume_approved(agent, task_id):
+def resume_approved(agent, task, task_id=None):
     """Carry out ONE approved action and report what actually happened.
 
-    THE ORDER HERE IS THE WHOLE POINT, and it is the order m7s_gateway taught:
+    THE ORDER HERE IS THE WHOLE POINT. It is m7s_gateway's order, plus the two steps a commit
+    security review found missing -- and both of those were the dangerous kind, because the
+    code around them looked complete:
 
-      1. ask the portal for a one-shot token. Everything it checks -- approved, unexpired,
-         unchanged, unspent -- is checked there, under its lock, before this returns.
-      2. REVALIDATE the live state. The approval was given minutes or hours ago; the session
-         may have expired and the page may have moved. An approved action carried out on the
-         wrong page is still a wrong action.
-      3. carry it out, once.
-      4. report COMPLETED only if the page itself confirms it. If it cannot be confirmed,
-         report UNKNOWN -- never FAILED, because the action may have gone through and FAILED
-         invites a retry that would do it twice.
+      1. Decide locally, from the PROFILE, that this workflow may act at all and which single
+         control it would press. The control is named in the profile. It used to be taken from
+         the portal's JSON response, which made free text decide which button a consequential
+         action presses.
+      2. Ask the portal for a one-shot token. Everything it checks -- approved, unexpired,
+         unchanged, unspent -- is checked there, under its lock, before this returns. Nothing
+         below this line runs without it.
+      3. GO BACK TO THE PAGE THAT WAS APPROVED, with the profile's host expected, so the
+         landed host is parsed and compared on a dot boundary. It used to call eyes_where on a
+         blank page and call that revalidation: an approved action carried out on whatever page
+         happened to be open is still a wrong action, and on a fresh browser that page is none.
+      4. Compare the page as it is NOW with the payload the person approved. A different url or
+         a different title means the thing approved is not the thing in front of us, and
+         nothing is pressed.
+      5. Press the profile's one control, once.
+      6. Report COMPLETED only if the page itself confirms it; UNKNOWN if it cannot be
+         confirmed -- never FAILED, because the action may have gone through and FAILED invites
+         a retry that would do it twice.
+
+    `task` is the task record from the portal (portal slug, workflow, grant). A task_id may be
+    passed separately for the odd caller that has only that.
     """
-    go = agent.portal.claim_exec(task_id)
+    tid = task_id or task["id"]
+    profile = pick_portal(task, agent.profiles)
+    workflow = str(task.get("workflow") or "") or pick_workflow(
+        task.get("instruction", ""), profile or {"workflows": {}})
+    if profile is None or not workflow or workflow not in (profile.get("workflows") or {}):
+        return "%s not carried out: no profile or workflow for it" % tid
+    w = profile["workflows"][workflow]
+    act = w.get("act")
+    if not w["approval_required"] or not isinstance(act, dict):
+        # A read workflow has nothing to carry out, and a consequential one without an act
+        # cannot load at all -- so this is unreachable unless the two drift apart.
+        return "%s not carried out: %s declares no consequential step" % (tid, workflow)
+
+    go = agent.portal.claim_exec(tid)
     if not go.get("ok"):
-        return "%s not carried out: %s" % (task_id, go.get("error", ""))
+        return "%s not carried out: %s" % (tid, go.get("error", ""))
     token = go["exec_token"]
-    # From here on an action may have happened, so there is no path that reports FAILED on an
-    # exception: it reports UNKNOWN and lets a person look.
+    approved = dict(go.get("payload") or {})
+
+    # From here on an action MAY have happened, so there is no path that reports FAILED after
+    # the control is pressed: it reports UNKNOWN and lets a person look.
+    pressed = False
     try:
-        with core.BrowserTask(headless=True, task_id=task_id,
-                              download_dir=os.path.join(agent.task_dir, task_id),
+        with core.BrowserTask(headless=True, task_id=tid,
+                              download_dir=os.path.join(agent.task_dir, tid),
                               vault=agent.vault) as b:
-            where = b.eyes_where()
-            if not where.ok:
-                agent.portal.result(task_id, token, "FAILED",
-                                    "the browser could not be revalidated before the "
-                                    "approved action; nothing was carried out")
-                return "%s not carried out: the state could not be revalidated" % task_id
-            done = b.hands_click(by_role="button", name=go.get("action"))
+            back = b.hands_goto(approved.get("page_url") or "",
+                                expect_host=(profile.get("hosts") or [None])[0])
+            if not back.ok:
+                agent.portal.result(tid, token, "FAILED",
+                                    "could not return to the page this was approved on, so "
+                                    "NOTHING was carried out: " + back.detail)
+                return "%s not carried out: %s" % (tid, back.detail)
+
+            now = agent._payload(profile, workflow, b, task)
+            differs = [k for k in ("portal", "workflow", "page_url", "page_title")
+                       if str(now.get(k) or "") != str(approved.get(k) or "")]
+            if differs:
+                agent.portal.result(tid, token, "FAILED",
+                                    "the page is not the one that was approved (%s differ), "
+                                    "so NOTHING was carried out. It must be approved again."
+                                    % ", ".join(differs))
+                return "%s not carried out: the page changed (%s)" % (tid, ",".join(differs))
+
+            pressed = True
+            done = b.hands_click(by_role=act.get("role"), name=act.get("name"),
+                                 selector=act.get("selector"))
             if done.ok:
-                agent.portal.result(task_id, token, "COMPLETED", done.detail,
+                agent.portal.result(tid, token, "COMPLETED", done.detail,
                                     evidence=done.evidence[:3])
-                return "%s COMPLETED" % task_id
-            agent.portal.result(task_id, token, "UNKNOWN",
+                return "%s COMPLETED" % tid
+            agent.portal.result(tid, token, "UNKNOWN",
                                 "the action was carried out and the result could not be "
                                 "confirmed: " + done.detail)
-            return "%s UNKNOWN" % task_id
+            return "%s UNKNOWN" % tid
     except Exception as e:
-        agent.portal.result(task_id, token, "UNKNOWN",
-                            "the worker stopped with %s after claiming the approved action. "
+        # Before the control was pressed nothing happened, and saying UNKNOWN there would
+        # freeze a task that is safe to approve again. After it, UNKNOWN is the only honest
+        # word. The flag is the difference.
+        if not pressed:
+            agent.portal.result(tid, token, "FAILED",
+                                "the worker stopped with %s BEFORE the approved action; "
+                                "nothing was carried out" % type(e).__name__)
+            return "%s not carried out (%s)" % (tid, type(e).__name__)
+        agent.portal.result(tid, token, "UNKNOWN",
+                            "the worker stopped with %s after pressing the approved control. "
                             "IT MAY HAVE GONE THROUGH." % type(e).__name__)
-        return "%s UNKNOWN (%s)" % (task_id, type(e).__name__)
+        return "%s UNKNOWN (%s)" % (tid, type(e).__name__)
+
+
+def run_approved(agent, limit=3):
+    """Everything a person has approved since the last run. The portal hands these back on a
+    separate stage of btask_next, because an APPROVED task is not QUEUED work and must not be
+    picked up by the ordinary loop."""
+    said = []
+    for t in agent.portal.next_tasks(limit, stage="approved"):
+        said.append(resume_approved(agent, t))
+    return said

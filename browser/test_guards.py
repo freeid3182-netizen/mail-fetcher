@@ -42,13 +42,22 @@ def ok(name, cond, detail=""):
     (PASS if cond else FAIL).append(name if not detail else "%s  [%s]" % (name, detail))
 
 
+# A consequential workflow must declare the control it would press; profiles.load refuses
+# one that does not. This keeps the loops below about the class rather than the boilerplate.
+def _wf(cls):
+    w = {"class": cls, "steps": []}
+    if cls in profiles.CONSEQUENTIAL_CLASSES:
+        w["act"] = {"do": "click", "role": "button", "name": "Confirm"}
+    return w
+
+
 PROFILE = profiles.load({
     "slug": "fictional-supplier",
     "name": "Fictional Supplier Portal",
     "hosts": ["supplier.test"],
     "credential_keys": ["SUPPLIER_USER", "SUPPLIER_PASS"],
     "workflows": dict(
-        (c, {"class": c, "steps": []}) for c in profiles.ALL_CLASSES),
+        (c, _wf(c)) for c in profiles.ALL_CLASSES),
 })
 ENV = {"BROWSER_CRED_SUPPLIER_USER": "atoz-bot",
        "BROWSER_CRED_SUPPLIER_PASS": "s3cret-not-real-abcdef"}
@@ -212,7 +221,7 @@ ok("gate/EVERY read class runs without an approval",
 # after it, claiming no approval is needed. load() refuses that, but nothing obliges a caller to
 # use load(), so the gate must not believe the field. Over the whole consequential set.
 LIAR = dict(PROFILE, workflows=dict(
-    (c, {"class": c, "approval_required": False, "retryable": True, "steps": []})
+    (c, dict(_wf(c), approval_required=False, retryable=True))
     for c in profiles.ALL_CLASSES))
 ran = [c for c in profiles.CONSEQUENTIAL_CLASSES if gate.decide(LIAR, c, GRANT, vault=V)[0]]
 ok("gate/a profile that claims it needs no approval is NOT believed, for any class",

@@ -47,9 +47,25 @@ GOOD = {
     "workflows": {
         "list_pos": {"class": "inspect", "steps": [{"do": "goto", "path": "/"}]},
         "get_doc": {"class": "download", "steps": []},
-        "send_ack": {"class": "submit", "steps": []},
+        "send_ack": {"class": "submit", "steps": [],
+                     "act": {"do": "click", "role": "button",
+                             "name": "Confirm"}},
     },
 }
+
+
+# A consequential workflow must declare the single control it would press -- profiles.load
+# refuses one that does not, which is the point. This builds a valid workflow of any class so
+# the loops below stay about the class and not about the boilerplate.
+ACT = {"do": "click", "role": "button", "name": "Confirm"}
+
+
+def wf(cls, **extra):
+    w = {"class": cls, "steps": []}
+    if cls in profiles.CONSEQUENTIAL_CLASSES:
+        w["act"] = dict(ACT)
+    w.update(extra)
+    return w
 
 p = profiles.load(GOOD)
 ok("profile/a good one loads", p["slug"] == "fictional-supplier")
@@ -60,14 +76,14 @@ ok("profile/hosts are normalised", p["hosts"] == ["supplier.test", "vendor.test"
 # approval fails here instead of shipping.
 gated, ungated = [], []
 for cls in profiles.ALL_CLASSES:
-    q = profiles.load(dict(GOOD, workflows={"w": {"class": cls, "steps": []}}))
+    q = profiles.load(dict(GOOD, workflows={"w": wf(cls)}))
     (gated if q["workflows"]["w"]["approval_required"] else ungated).append(cls)
 ok("profile/EVERY consequential class is approval-gated",
    sorted(gated) == sorted(profiles.CONSEQUENTIAL_CLASSES),
    "gated: %s" % sorted(gated))
 ok("profile/EVERY read class is not gated, and is retryable",
    sorted(ungated) == sorted(profiles.READ_CLASSES)
-   and all(profiles.load(dict(GOOD, workflows={"w": {"class": c, "steps": []}}))
+   and all(profiles.load(dict(GOOD, workflows={"w": wf(c)}))
            ["workflows"]["w"]["retryable"] for c in profiles.READ_CLASSES),
    "ungated: %s" % sorted(ungated))
 
@@ -75,8 +91,7 @@ ok("profile/EVERY read class is not gated, and is retryable",
 refused = []
 for cls in profiles.CONSEQUENTIAL_CLASSES:
     try:
-        profiles.load(dict(GOOD, workflows={"w": {"class": cls, "approval_required": False,
-                                                  "steps": []}}))
+        profiles.load(dict(GOOD, workflows={"w": wf(cls, approval_required=False)}))
     except profiles.ProfileError as e:
         if "may not change that" in str(e):
             refused.append(cls)

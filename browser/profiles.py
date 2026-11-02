@@ -100,6 +100,32 @@ def load(raw):
         steps = w.get("steps") or []
         if not isinstance(steps, list):
             raise ProfileError("workflow %r steps must be a list" % wname)
+
+        # THE CONSEQUENTIAL STEP IS DECLARED SEPARATELY, AND THAT IS A STRUCTURAL GUARANTEE
+        # RATHER THAN A CONVENTION. `steps` are the safe ones and the agent runs them; `act` is
+        # the one thing a person approves, it is not in that list, and no code path reaches it
+        # without a one-shot token from the portal.
+        #
+        # It is also what the control is NAMED BY. A commit security review found the worker
+        # clicking a control whose name came out of the portal's JSON response -- free text
+        # deciding which button a consequential action presses. The name belongs in the
+        # profile, which is a reviewed file, and nowhere else.
+        act = w.get("act")
+        if needs_approval:
+            if not isinstance(act, dict) or not str(act.get("do") or "").strip():
+                raise ProfileError(
+                    "workflow %r is a %r action, so it must declare the single step it would "
+                    "carry out, as \"act\": {\"do\": ..., \"role\": ..., \"name\": ...}. The "
+                    "control a consequential action presses is named in this file and never "
+                    "taken from a response or a page." % (wname, cls))
+            if not (str(act.get("name") or "").strip()
+                    or str(act.get("selector") or "").strip()):
+                raise ProfileError("workflow %r act must name the control it presses" % wname)
+        elif act is not None:
+            raise ProfileError(
+                "workflow %r is a %r action and has nothing to approve, so it may not declare "
+                "an act. A read workflow that wants to act is a misclassified workflow."
+                % (wname, cls))
         workflows[str(wname)] = {
             "class": cls,
             # What this workflow is for, in a person's words. Optional, and flattened to one
@@ -111,6 +137,7 @@ def load(raw):
             "approval_required": needs_approval,
             "retryable": cls in READ_CLASSES,
             "steps": steps,
+            "act": dict(act) if isinstance(act, dict) else None,
             "expect": dict(w.get("expect") or {}),
         }
 
