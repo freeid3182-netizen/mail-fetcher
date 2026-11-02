@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fictional Supplier Portal</title>
+</head>
+<body>
+<!-- A stand-in for an authorized portal nobody has to own. It carries, deliberately, the
+     shapes that break browser automation in the real world: a button that does nothing at
+     all, a table whose columns only make sense by their headings, a download that arrives
+     empty, and a link that bounces somewhere else. Each one exists because asserting the
+     happy path only is how automation comes to report success it has not earned. -->
+<h1>Fictional Supplier Portal</h1>
+<h2>Purchase Orders</h2>
+
+<table id="pos">
+  <thead>
+    <tr><th>PO Number</th><th>Site</th><th>Amount</th><th>Status</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>6204019486</td><td>Jogeshwar</td><td>1,50,000.00</td><td>Open</td></tr>
+    <tr><td>6204019487</td><td>Gotan</td><td>2,75,500.50</td><td>Closed</td></tr>
+    <tr><td>6204019488</td><td>Nimbol</td><td>99,000.00</td><td>Open</td></tr>
+  </tbody>
+</table>
+
+<h3>Search</h3>
+<form id="f" onsubmit="return false">
+  <label for="q">PO number</label>
+  <input id="q" name="q" type="text" aria-label="PO number" placeholder="6204019486">
+  <label for="period">Period</label>
+  <select id="period" name="period" aria-label="Period">
+    <option value="">choose</option>
+    <option value="2026-09">September 2026</option>
+    <option value="2026-10">October 2026</option>
+  </select>
+  <button id="search" type="button" aria-label="Search"
+          onclick="document.getElementById('status').textContent='3 purchase orders found';
+                   document.title='Search done'">Search</button>
+</form>
+
+<p id="status">nothing searched yet</p>
+
+<!-- A button that is perfectly clickable and does NOTHING. The core must report this as a
+     failure: it is the exact shape of a portal whose submit silently drops the request. -->
+<button id="dead" type="button" aria-label="Looks Important">Looks Important</button>
+
+<h3>Documents</h3>
+<a id="dl" aria-label="Download PO 6204019486"
+   href="data:text/plain;base64,UE8gNjIwNDAxOTQ4Ngo=" download="po-6204019486.txt">
+   Download PO 6204019486</a>
+<a id="dlempty" aria-label="Download Empty File" href="data:text/plain," download="empty.txt">
+   Download Empty File</a>
+<a id="away" aria-label="Session Expired Link" href="other.html">Session Expired Link</a>
+
+<h3>Upload</h3>
+<input id="u" type="file" aria-label="Attach a document">
+
+<h3>Second window</h3>
+<a id="newtab" aria-label="Open In New Tab" href="other.html" target="_blank">Open In New Tab</a>
+</body>
+</html>

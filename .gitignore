@@ -3,3 +3,4 @@ __pycache__/
 mailboxes.json
 *.bak
 mailboxes.json.bak
+_test_downloads/
