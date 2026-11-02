@@ -23,6 +23,7 @@ Phase 13 on 2 Nov 2026.
 """
 import json
 import re
+from urllib.parse import urlsplit
 
 # Read-only classes are safe to retry and to run in parallel. Everything else changes something
 # outside this business's own records and needs a person. The split is the contract's §3D list,
@@ -119,21 +120,56 @@ def load(raw):
     }
 
 
-def host_allowed(profile, url):
-    """Is this url inside the profile's declared hosts?
+def host_of(url):
+    """The hostname a BROWSER would use, or "" if this is not an http(s) url.
 
-    Suffix matching on a dot boundary, so `.supplier.test` covers `a.supplier.test` but a
-    host merely ENDING in those characters -- `evilsupplier.test` -- does not. That trick is
-    how allow-lists are usually got around.
+    THERE IS ONE HOST RULE IN THIS WORKER AND IT IS HERE. The first version of this file had a
+    regex, and `core.hands_goto` separately had `expect_host in landed_url` -- a substring test
+    against the whole url, so https://evil.test/?x=supplier.test read as "landed on
+    supplier.test". One rule written twice is how the weaker copy becomes the one that matters.
+
+    urlsplit, not a regex, because a hand-written parser only has to differ from the browser's
+    once to be a bypass: userinfo before the real host, a backslash the browser rewrites as a
+    slash, a tab or newline the browser strips, a fragment or query carrying the expected name.
+    Backslashes are normalised the way browsers do BEFORE parsing, and the control characters
+    browsers silently drop are dropped here too, so this reads the same url the browser will.
+    Anything that is not http or https -- file:, data:, javascript: -- has no host and is
+    refused rather than interpreted.
     """
-    m = re.match(r"^[a-z]+://([^/@]*@)?([^/:?#]+)", str(url or "").strip(), re.I)
-    if not m:
+    s = str(url or "").strip()
+    s = s.replace("\\", "/")
+    s = re.sub(r"[\x00-\x20\x7F]", "", s)          # what browsers strip, stripped first
+    try:
+        parts = urlsplit(s)
+    except ValueError:
+        return ""
+    if parts.scheme.lower() not in ("http", "https"):
+        return ""
+    try:
+        host = (parts.hostname or "").lower()      # hostname drops userinfo and the port
+    except ValueError:
+        return ""
+    # After parsing, a host may still hold characters no real host has (an IDN homograph, an
+    # encoded separator). A host this worker cannot write down plainly is a host it will not
+    # visit.
+    return host if host and _HOST.match(host) else ""
+
+
+def host_matches(host, allowed_host):
+    """Exact, or a subdomain on a DOT boundary. `evilsupplier.test` is not `supplier.test`."""
+    host = str(host or "").lower()
+    h = str(allowed_host or "").lower().lstrip("*").lstrip(".")
+    if not host or not h:
         return False
-    host = m.group(2).lower()
-    for h in profile.get("hosts", []):
-        if host == h or host.endswith("." + h.lstrip(".")):
-            return True
-    return False
+    return host == h or host.endswith("." + h)
+
+
+def host_allowed(profile, url):
+    """Is this url inside the profile's declared hosts?"""
+    host = host_of(url)
+    if not host:
+        return False
+    return any(host_matches(host, h) for h in profile.get("hosts", []))
 
 
 def allowed(profile, workflow, grant):

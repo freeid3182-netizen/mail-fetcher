@@ -107,20 +107,56 @@ ok("profile/every malformed profile is refused with a reason",
    len(rejected) == len(BAD),
    "accepted: %s" % ", ".join(w for w in BAD if w not in rejected))
 
-# host_allowed: the suffix trick is the one that matters.
+# ---- THE HOST RULE, OVER EVERY SHAPE THAT HAS EVER BEEN USED TO BEAT ONE ----------------
+# This set exists because the first version of this code had the rule written TWICE: a careful
+# one here and `expect_host in landed_url` in core.hands_goto, which https://evil.test/
+# ?x=supplier.test satisfies. The weaker copy is always the one that decides. So the shapes are
+# asserted as a set, against the single shared rule, and core is checked for not having its own.
 HOSTS = {
     "https://supplier.test/x": True,
+    "https://SUPPLIER.TEST/x": True,                      # case
+    "https://supplier.test:8443/x": True,                 # a port is not part of the host
     "https://a.supplier.test/x": True,
     "https://deep.a.vendor.test/x": True,
-    "https://evilsupplier.test/x": False,          # ends with the characters, not the host
+    "https://evilsupplier.test/x": False,                 # ends with the characters, not the host
     "https://supplier.test.attacker.test/x": False,
-    "http://x@evil.test/supplier.test": False,     # userinfo before the real host
-    "supplier.test/x": False,                      # no scheme is not a url
+    "http://x@evil.test/supplier.test": False,            # userinfo before the real host
+    "http://supplier.test@evil.test/": False,             # the expected name AS the userinfo
+    "https://evil.test/?x=supplier.test": False,          # in the query
+    "https://evil.test/#supplier.test": False,            # in the fragment
+    "https://evil.test/supplier.test/doc": False,         # in the path
+    # TRUE, and checked against Chromium rather than reasoned about: a browser rewrites the
+    # backslash as a path separator, so this really does land on supplier.test with the path
+    # /.evil.test/. Refusing it would be a false alarm, and a host rule that cries wolf gets
+    # widened by whoever is on duty.
+    "https://supplier.test\\.evil.test/": True,
+    "https://ev\til.test/": False,                        # a tab browsers strip
+    "file:///C:/windows/supplier.test": False,            # not http(s)
+    "javascript:fetch('//supplier.test')": False,
+    "data:text/html,<a href=//supplier.test>": False,
+    "supplier.test/x": False,                             # no scheme is not a url
     "": False,
 }
 wrong = [u for u, want in HOSTS.items() if profiles.host_allowed(p, u) != want]
-ok("profile/the host check holds for every shape, including the suffix trick",
+ok("profile/the host rule holds for all %d shapes, trick for trick" % len(HOSTS),
    not wrong, "wrong: %s" % wrong)
+ok("profile/a host is parsed, not pattern-matched",
+   profiles.host_of("https://supplier.test:8443/a?b=c#d") == "supplier.test"
+   and profiles.host_of("ftp://supplier.test/") == ""
+   and profiles.host_of("http://u:p@a.vendor.test/") == "a.vendor.test",
+   profiles.host_of("http://u:p@a.vendor.test/"))
+MATCH = {("supplier.test", "supplier.test"): True, ("a.supplier.test", "supplier.test"): True,
+         ("evilsupplier.test", "supplier.test"): False, ("supplier.test", ""): False,
+         ("", "supplier.test"): False, ("supplier.test", ".supplier.test"): True}
+ok("profile/the dot-boundary match is right in both directions",
+   not [k for k, v in MATCH.items() if profiles.host_matches(*k) != v],
+   str([k for k, v in MATCH.items() if profiles.host_matches(*k) != v]))
+
+# One rule, one implementation. A second copy in core is what this catches.
+_CORE = open(os.path.join(HERE, "core.py"), encoding="utf-8").read()
+ok("profile/core does NOT write its own host comparison",
+   "expect_host.lower() not in" not in _CORE and "profiles.host_matches" in _CORE,
+   "the landing check must call the shared rule")
 
 # The intersection. A profile claiming `submit` cannot beat a grant of `inspect`.
 okk, cls, need, why = profiles.allowed(p, "send_ack", ["inspect", "download"])
@@ -182,6 +218,35 @@ else:
         rbad = b.hands_goto(BASE + "/index.html", expect_host="supplier.test")
         ok("goto/a landing on the wrong host is a FAILURE",
            rbad.ok is False and "is not" in rbad.detail, repr(rbad))
+
+        # THE REGRESSION FOR THE REAL BUG: the expected host appears in the query string of a
+        # url served by somewhere else entirely. The substring version of this check passed it.
+        rtrick = b.hands_goto(BASE + "/index.html?doc=supplier.test",
+                              expect_host="supplier.test")
+        ok("goto/the expected host inside the QUERY does not count as landing there",
+           rtrick.ok is False and "127.0.0.1" in rtrick.detail, repr(rtrick))
+        ok("goto/and the verification says the url was parsed",
+           "PARSED" in rtrick.verified_by, rtrick.verified_by)
+        rright = b.hands_goto(BASE + "/index.html", expect_host="127.0.0.1")
+        ok("goto/the genuine host still passes", rright.ok, repr(rright))
+
+        # ---- THE PARSER MUST AGREE WITH THE BROWSER, SHAPE FOR SHAPE ----------------
+        # The whole class of allow-list bypass is "my parser read a different host than the
+        # browser will visit". So it is not reasoned about: Chromium is asked, and any
+        # disagreement is a failure. This makes a parser differential impossible to
+        # reintroduce by a later tidy-up of host_of().
+        DIFFS = []
+        for u in ("https://supplier.test\\.evil.test/", "http://supplier.test@evil.test/",
+                  "https://supplier.test:8443/a?b=c#d", "https://ev\til.test/",
+                  "https://SUPPLIER.TEST/x", "https://evil.test/?x=supplier.test",
+                  "https://a.b.supplier.test/", "http://u:p@a.vendor.test/"):
+            got = b.page.evaluate(
+                "u => { try { return new URL(u).hostname } catch(e) { return 'ERR' } }", u)
+            mine = profiles.host_of(u)
+            if (got or "").lower() != mine:
+                DIFFS.append("%r browser=%r mine=%r" % (u, got, mine))
+        ok("host/the worker's parser agrees with Chromium on every shape", not DIFFS,
+           "; ".join(DIFFS))
 
         # ---- eyes
         ok("eyes/where", b.eyes_where().title == "Fictional Supplier Portal")

@@ -30,6 +30,8 @@ import os
 import re
 import time
 
+import profiles          # the ONE host rule lives there; this file must not write a second
+
 # PLAYWRIGHT IS IMPORTED WHERE IT IS USED, not here. The profile rules, the filename rules and
 # the budget are plain logic that a machine with no browser must be able to import and test --
 # and a worker that fails at import time on a box without Chromium is a worker nobody can
@@ -355,10 +357,17 @@ class BrowserTask(object):
         except PWError as e:
             return self._fail("open " + url, str(e)[:200], "the browser refused the url")
         landed = self._url()
-        if expect_host and expect_host.lower() not in landed.lower():
-            return self._fail("open " + url,
-                              "landed on %s, which is not %s" % (landed, expect_host),
-                              "the url after loading was compared with the expected host")
+        if expect_host:
+            # profiles.host_of / host_matches, NOT a substring test on the url. The first
+            # version of this line was `expect_host in landed`, which https://evil.test/
+            # ?x=supplier.test satisfies -- the exact trick the profile host check was written
+            # to stop, re-introduced here by writing the rule a second time.
+            landed_host = profiles.host_of(landed)
+            if not profiles.host_matches(landed_host, expect_host):
+                return self._fail(
+                    "open " + url,
+                    "landed on host %r, which is not %s" % (landed_host or landed, expect_host),
+                    "the landed url was PARSED and its hostname compared on a dot boundary")
         return self._record(ActionResult(True, "open " + url,
                                          "the url after loading, not the request",
                                          landed, landed, self._title()))
