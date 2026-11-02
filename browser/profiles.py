@@ -102,6 +102,12 @@ def load(raw):
             raise ProfileError("workflow %r steps must be a list" % wname)
         workflows[str(wname)] = {
             "class": cls,
+            # What this workflow is for, in a person's words. Optional, and flattened to one
+            # line because it is read into a refusal message. agent.pick_workflow matches an
+            # instruction against the workflow's NAME and this -- so a profile that describes
+            # its workflows is the thing being read, rather than a list of synonyms kept in
+            # the agent, which would have to be edited every time a portal is added.
+            "means": re.sub(r"\s+", " ", str(w.get("means") or "")).strip()[:160],
             "approval_required": needs_approval,
             "retryable": cls in READ_CLASSES,
             "steps": steps,

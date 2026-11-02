@@ -218,6 +218,29 @@ ran = [c for c in profiles.CONSEQUENTIAL_CLASSES if gate.decide(LIAR, c, GRANT, 
 ok("gate/a profile that claims it needs no approval is NOT believed, for any class",
    not ran, "believed for: %s" % ran)
 
+# may_prepare exists so the safe steps of a consequential workflow can run before a person is
+# shown anything. The danger in having two gates is that a caller uses the permissive one at
+# the moment that needs the strict one, so the two properties are asserted over the whole set:
+# prepare lets every consequential workflow START, and still marks every one of them as needing
+# an approval, which is what makes the caller come back through decide().
+prep = {c: gate.may_prepare(PROFILE, c, GRANT, vault=V) for c in ALL}
+ok("gate/the safe steps of EVERY workflow may be prepared, read or consequential",
+   all(v[0] for v in prep.values()),
+   "refused: %s" % [c for c, v in prep.items() if not v[0]])
+ok("gate/and EVERY consequential one still comes back marked as needing a person",
+   all(prep[c][2]["needs_approval"] for c in profiles.CONSEQUENTIAL_CLASSES)
+   and not any(prep[c][2]["needs_approval"] for c in profiles.READ_CLASSES),
+   str({c: prep[c][2]["needs_approval"] for c in ALL}))
+ok("gate/preparing says in words that it does NOT authorise the action",
+   all("NOT authorised" in prep[c][1] for c in profiles.CONSEQUENTIAL_CLASSES),
+   str([prep[c][1] for c in profiles.CONSEQUENTIAL_CLASSES])[:160])
+ok("gate/and it carries no approval reference for anything",
+   not any(prep[c][2]["approval_ref"] for c in ALL))
+ok("gate/a workflow outside the grant is refused at the prepare stage too",
+   gate.may_prepare(PROFILE, "submit", ["inspect"], vault=V)[0] is False)
+ok("gate/and so is a missing credential, before a browser is launched",
+   gate.may_prepare(PROFILE, "inspect", GRANT, vault=vault.Vault({}))[0] is False)
+
 ok("gate/an unknown action class is refused, not treated as a read",
    gate.decide(dict(PROFILE, workflows={"w": {"class": "teleport", "approval_required": False,
                                               "retryable": True, "steps": []}}),

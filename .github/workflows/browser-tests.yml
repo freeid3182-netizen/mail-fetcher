@@ -32,6 +32,9 @@ jobs:
       # works on the owner's machine is not a control.
       - name: Targeted tests for the guards (credentials, approval, audit, files)
         run: python browser/test_guards.py
+      # The worker loop, against a fake portal and the local fixture. No network, no portal.
+      - name: Targeted tests for the agent loop
+        run: python browser/test_agent.py
       - name: Keep the evidence when it fails
         if: failure()
         uses: actions/upload-artifact@v4

@@ -24,6 +24,53 @@ import approval
 import profiles
 
 
+def may_prepare(profile, workflow, grant, vault=None):
+    """May the SAFE part of this workflow run? (ok, why, facts)
+
+    WHY THIS EXISTS, and the test that forced it: the contract's approval step says to
+    "complete all safe preparatory work", save a checkpoint, show the person the exact content
+    and only then stop. Calling decide() at the start of a run instead refused every
+    consequential workflow before a single safe step had happened -- so a person was shown
+    nothing, and the task reported itself blocked for want of an approval of content that had
+    not been assembled yet.
+
+    SO THIS ANSWERS A SMALLER QUESTION, AND CANNOT ANSWER THE BIG ONE. It says whether the
+    workflow is within the person's grant, whether its class is classified, and whether the
+    credentials exist -- all the things that are worth knowing before a browser is launched. It
+    says NOTHING about the approval, and `facts['needs_approval']` comes back true for a
+    consequential workflow precisely so the caller must come back through decide() with a
+    person's approval before it touches the consequential step. There is no path from here to
+    an action.
+    """
+    facts = {"portal": profile.get("slug", ""), "workflow": workflow, "action_class": "",
+             "needs_approval": False, "approval_ref": "", "credentials": [],
+             "prepare_only": True}
+
+    okp, cls, _profile_says, why = profiles.allowed(profile, workflow, grant)
+    facts["action_class"] = cls
+    facts["needs_approval"] = cls in profiles.CONSEQUENTIAL_CLASSES
+    if not okp:
+        return False, why, facts
+
+    known = set(profiles.READ_CLASSES) | set(profiles.CONSEQUENTIAL_CLASSES)
+    if cls not in known:
+        return False, "action class %r is not classified; refusing by default" % cls, facts
+
+    if vault is not None:
+        have = vault.have(profile.get("credential_keys") or [])
+        facts["credentials"] = have["needed"]
+        if not have["ok"]:
+            return (False,
+                    "the credentials this portal needs are not configured: %s. They are set as "
+                    "worker secrets by their KEY NAME and never sent in a message."
+                    % ", ".join(have["missing"]), facts)
+
+    if facts["needs_approval"]:
+        return True, ("the safe steps of a %s workflow may run; the %s action itself needs a "
+                      "person's approval and is NOT authorised by this" % (cls, cls)), facts
+    return True, "a %s action, granted, no approval needed" % cls, facts
+
+
 def decide(profile, workflow, grant, vault=None,
            pending=None, payload_now=None, spent_keys=()):
     """(ok, why, facts). `facts` carries what an audit row needs, so the caller cannot
