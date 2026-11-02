@@ -19,6 +19,16 @@ WHAT IT MUST NOT DO, and does not:
     attempted; and the portal refuses a second result for a settled send. Before the
     claim existed this script sent one message repeatedly for four days, because a
     report that failed after delivery left the row QUEUED and killed the run.
+
+    AND IT SAYS SO BEFORE IT SENDS, not only after. The claim and the lease bounded the
+    damage to three attempts; three is not one. The portal could not tell a worker that
+    died before opening the connection from one that died after the server took the
+    message, so it guessed "try again". This script now marks each message
+    (mail7_send_wire) in the moment before the connection opens, and REFUSES TO SEND a
+    message whose mark the portal did not accept — because a silence over an unwritten
+    mark looks exactly like a message that never left, and that is the duplicate. A marked
+    message that goes unreported is never handed out again; resolving it needs a person to
+    look in the Sent folder (mail7_send_clear_unknown).
   - invent a recipient. The envelope comes from the portal, not from parsing the message.
 
   MAILBOXES   the same JSON list the other scripts use; `legacy_box` matches `box`
@@ -153,7 +163,13 @@ def main():
     if isinstance(boxes, dict):
         boxes = boxes.get("mailboxes", [])
 
-    out = api(url, key, "mail7_send_outbox", limit=int(os.environ.get("SEND_BATCH", "5")))
+    # wire=1 SAYS THIS RUN WILL MARK EACH MESSAGE BEFORE IT SENDS IT, and the portal records
+    # that on the row it hands over. It is what lets a lease expiry tell a worker that died
+    # BEFORE the bytes left from one that died AFTER: without it the portal cannot know, so
+    # it gives one lease and no retries rather than guessing. Dropping this flag is safe and
+    # only ever makes the portal more cautious.
+    out = api(url, key, "mail7_send_outbox", limit=int(os.environ.get("SEND_BATCH", "5")),
+              wire=1)
     msgs = out.get("messages", [])
     print("outbox: %d queued, %d unsendable" % (len(msgs), out.get("unsendable", 0)))
     if not msgs:
@@ -174,6 +190,29 @@ def main():
             continue
         data = base64.b64decode(m["raw_b64"])
         host = smtp_host(c.get("host"))
+
+        # THE BYTES ARE ABOUT TO LEAVE, AND THE PORTAL IS TOLD SO FIRST.
+        #
+        # This is the whole of the fix. The portal cannot tell a worker that died before
+        # opening the connection from one that died after the server took the message, and
+        # it used to guess "try again" — which is how the same approved mail went out
+        # repeatedly. Now the guess is replaced by this mark: a marked message that is never
+        # reported on is never handed over again, because it may be out there; an unmarked
+        # one is known not to have left and safely can be.
+        #
+        # SO AN UNACCEPTED MARK MEANS DO NOT SEND. If the portal did not write the mark —
+        # unreachable, log busy, claim already expired, row already settled — then a silence
+        # from here would look exactly like a message that never left, and the next run
+        # would be handed it again. Sending on an unwritten mark is the duplicate.
+        w = api(url, key, "mail7_send_wire", fatal=False, body={"send_id": sid})
+        if w.get("_unreported") or not w.get("ok"):
+            print("  %s  NOT SENT: the portal did not accept the pre-send mark (%s)"
+                  % (sid, str(w.get("error") or "could not reach the portal")[:120]))
+            print("     Nothing was put on the wire. The claim's lease decides what happens "
+                  "next; this run does not.")
+            failed += 1
+            continue
+
         ok, detail = deliver(host, str(c["user"]), str(c["pass"]),
                              m["email"], m["envelope_to"], data)
         # Reported BEFORE the next message is attempted, so a crash leaves at most one
