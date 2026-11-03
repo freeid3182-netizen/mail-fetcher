@@ -52,6 +52,32 @@ _HOST = re.compile(r"^[a-z0-9.-]+$")
 SAFE_STEP_VERBS = ("goto", "click", "type", "select", "download", "read", "read_pages",
                    "scroll", "screenshot", "tree", "back", "tab", "discover", "press")
 
+# WHICH KEYS A `press` STEP MAY SEND, and this list is an allowlist for the same reason the one
+# above is -- which took a second review to get right. The first version of the press guard was
+# a DENYLIST: it refused "enter" and "return" after lowercasing and dropping "numpad". So
+# `Control+Enter`, `Shift+Enter`, a leading space, `Space` on a focused button and a bare
+# newline all went straight through. A denylist of ways to submit a form is a list somebody
+# will always find one more entry for; that is precisely the argument this file already makes
+# about SAFE_STEP_VERBS, and the guard written ten minutes later ignored it.
+#
+# So: navigation only, matched whole, case-insensitively, against this list and nothing else.
+# A step that wants to submit declares the workflow's `act` and waits for a person.
+SAFE_PRESS_KEYS = ("Tab", "Shift+Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+                   "PageUp", "PageDown", "Home", "End", "Escape")
+
+
+def press_ok(keys):
+    """May a step press this? ONE rule, in one place -- the host-rule lesson in `host_of`.
+
+    The agent's step loop and this file's own validation both call it, so a `press` that a
+    loaded profile accepted cannot be refused at run time and, more to the point, one it
+    refuses cannot be reached by another road.
+    """
+    k = str(keys or "").strip()
+    if not k or any(ord(c) < 0x20 or ord(c) == 0x7F for c in k):
+        return False
+    return k.lower() in tuple(s.lower() for s in SAFE_PRESS_KEYS)
+
 
 class ProfileError(ValueError):
     """A profile that cannot be trusted is not loaded. There is no partial profile."""
@@ -142,6 +168,15 @@ def load(raw):
                     "anything, so it must be one of: %s. A consequential action is declared as "
                     "the workflow's \"act\", where a person decides on it."
                     % (wname, i + 1, verb, ", ".join(SAFE_STEP_VERBS)))
+            # A press is a navigation key or it is not a step: Enter on a focused form is a
+            # submit, and so are Control+Enter, Space on a button and a bare newline. Refused
+            # HERE as well as in the step loop, so a profile carrying one does not load at all.
+            if verb == "press" and not press_ok(s.get("keys")):
+                raise ProfileError(
+                    "workflow %r step %d presses %r. A step may press a navigation key only "
+                    "(%s): anything that can submit a form is a person's decision, declared "
+                    "as the workflow's \"act\"."
+                    % (wname, i + 1, s.get("keys"), ", ".join(SAFE_PRESS_KEYS)))
 
         # THE CONSEQUENTIAL STEP IS DECLARED SEPARATELY, AND THAT IS A STRUCTURAL GUARANTEE
         # RATHER THAN A CONVENTION. `steps` are the safe ones and the agent runs them; `act` is

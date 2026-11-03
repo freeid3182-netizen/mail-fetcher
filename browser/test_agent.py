@@ -566,12 +566,43 @@ ok("step/a profile of ordinary safe steps still loads",
 # Pressing Enter is a submit on a focused form, so it is refused as a step the same way --
 # checked through the step loop itself, with no browser, because the refusal happens before
 # anything is sent.
-_pressed = agent.Agent.__dict__["_one_step"](
-    _FakeAgent(), None, {"slug": "x", "hosts": ["supplier.test"]},
-    {"do": "press", "keys": "Enter"})
-ok("step/a step that presses Enter is refused before anything is sent",
-   _pressed is not None and _pressed.ok is False and "a submission is a person's decision"
-   in _pressed.detail, str(_pressed)[:140])
+#
+# THE SECOND REVIEW'S FINDING, and it was right: the first guard was a denylist on "enter" and
+# "return", so every one of these got through. Asserted as the SET of ways to submit, at BOTH
+# ends -- the step loop and the profile loader -- because a denylist of ways to submit a form
+# is a list somebody always finds one more entry for.
+SUBMITTERS = ("Enter", "enter", "Return", "NumpadEnter", " Enter", "Enter ", "Control+Enter",
+              "Shift+Enter", "Meta+Enter", "Space", " ", "\n", "\r", "", "Enter\n")
+
+
+def _press_step(keys):
+    return agent.Agent.__dict__["_one_step"](
+        _FakeAgent(), None, {"slug": "x", "hosts": ["supplier.test"]},
+        {"do": "press", "keys": keys})
+
+
+through = [k for k in SUBMITTERS
+           if (_press_step(k) is None or _press_step(k).ok is not False)]
+ok("press/EVERY way of submitting with a key is refused in the step loop", not through,
+   str(through))
+loaded = []
+for k in SUBMITTERS:
+    try:
+        profiles.load({"slug": "presschk", "name": "Press check", "hosts": ["supplier.test"],
+                       "workflows": {"w": {"class": "inspect",
+                                           "steps": [{"do": "press", "keys": k}]}}})
+        loaded.append(k)
+    except profiles.ProfileError:
+        pass
+ok("press/and a profile carrying any of them does not load at all", not loaded, str(loaded))
+ok("press/the refusal names the keys that ARE allowed",
+   "ArrowDown" in (_press_step("Enter").detail or ""), _press_step("Enter").detail[:120])
+# And the allowlist still works, over all of it, or the guard is just a wall.
+refused = [k for k in profiles.SAFE_PRESS_KEYS if not profiles.press_ok(k)]
+ok("press/EVERY navigation key in the allowlist is still pressable", not refused, str(refused))
+ok("press/one rule, in one place: the loop calls profiles.press_ok rather than its own test",
+   "profiles.press_ok(" in AG_SRC and "press_ok" in open(
+       os.path.join(HERE, "profiles.py"), encoding="utf-8").read(), "")
 
 shutil.rmtree(PDIR, ignore_errors=True)
 

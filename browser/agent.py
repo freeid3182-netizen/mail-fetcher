@@ -336,15 +336,19 @@ class Agent(object):
         # worked around.
         if do == "press":
             # Enter on a focused form is a submit, which is the same hole as an upload by
-            # another road. Navigation keys only; a workflow that needs to submit declares an
-            # `act` and waits for a person.
+            # another road. THE FIRST VERSION OF THIS GUARD WAS A DENYLIST and a second review
+            # caught it: it refused "enter" and "return" after lowercasing, so Control+Enter,
+            # Shift+Enter, a leading space, Space on a focused button and a bare newline all
+            # went through. The rule is profiles.press_ok -- one allowlist, which the profile
+            # loader checks too, so a profile carrying a bad press does not load at all.
             keys = str(step.get("keys") or "")
-            if keys.lower().replace("numpad", "") in ("enter", "return", ""):
+            if not profiles.press_ok(keys):
                 return core.ActionResult(
                     False, "refused a key press", "the key was read before anything was sent",
-                    detail="a step may not press %r: on a focused form that is a submit, and "
-                           "a submission is a person's decision. Declare it as the workflow's "
-                           "act." % keys)
+                    detail="a step may press a navigation key only (%s). %r can submit a "
+                           "form, and a submission is a person's decision: declare it as the "
+                           "workflow's act."
+                           % (", ".join(profiles.SAFE_PRESS_KEYS), keys))
             return b.hands_press(keys)
         if do == "back":
             return b.hands_back()
