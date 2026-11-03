@@ -571,6 +571,85 @@ ok("expiry/the reason is in words, so a task record says what was seen",
 
 shutil.rmtree(SDIR, ignore_errors=True)
 
+# ================= RESEARCH THAT CARRIES ITS SOURCES (§3.3) =========================
+# The dangerous output here is a tidy table of invented numbers, and it looks exactly like a
+# tidy table of real ones. So the refusals are asserted over the whole set of ways a claim
+# could arrive without a source.
+import research     # noqa: E402
+
+
+def _ok_call(fn):
+    """True if it ran, False if it refused. A refusal is the thing being asserted."""
+    try:
+        fn()
+        return True
+    except research.ResearchError:
+        return False
+
+
+N1 = research.Note("https://supplier.test/rates", "Grade A: 8450 per tonne",
+                   kind=research.SECONDARY, title="Rates")
+ok("res/a note records the url, the words as the page had them, and when it was read",
+   N1.url and N1.verbatim and N1.at and "T" in N1.at, N1.cite()[:110])
+missing = []
+for args in (("", "some words"), ("https://x.test/a", ""), ("", "")):
+    try:
+        research.Note(*args)
+        missing.append(args)
+    except research.ResearchError:
+        pass
+ok("res/a note with no url or no quoted words cannot be built", not missing, str(missing))
+ok("res/and a source kind outside the set is refused",
+   not _ok_call(lambda: research.Note("https://x.test/a", "w", kind="probably official")))
+
+try:
+    research.Finding("the rate is 8450", [])
+    nosrc = "it was built"
+except research.ResearchError as e:
+    nosrc = str(e)
+ok("res/A FINDING WITH NO NOTE CANNOT EXIST, which is the whole file",
+   "invention" in nosrc, nosrc[:110])
+ok("res/nor can a finding be built from something that is not a note",
+   not _ok_call(lambda: research.Finding("c", ["https://x.test/a"])))
+
+F1 = research.Finding("Grade A is 8450 per tonne", [N1])
+ok("res/a finding reports the best source kind it has",
+   F1.as_dict()["source_kind"] == research.SECONDARY and F1.as_dict()["certain"] is True)
+N2 = research.Note("https://other.test/rates", "Grade A: 9100 per tonne",
+                   kind=research.SECONDARY)
+F2 = research.Finding("Grade A is 8450 per tonne", [N1, N2])
+d = F2.as_dict()
+ok("res/sources that DISAGREE are reported as a disagreement, not averaged or picked",
+   d["certain"] is False and len(d["disagreement"]) == 2
+   and {x["says"] for x in d["disagreement"]} == {N1.verbatim, N2.verbatim},
+   json.dumps(d["disagreement"])[:160])
+NO = research.Note("https://gov-in-rates.example.test/p", "official rate 8000")
+ok("res/official is DECLARED in the profile, never read off a hostname",
+   research.kind_for(SUPP, "https://gov-in-rates.example.test/p") == research.UNKNOWN
+   and NO.kind == research.UNKNOWN)
+OFFPROF = profiles.load({"slug": "withofficial", "name": "With Official",
+                         "hosts": ["supplier.test", "rates.test"],
+                         "official_hosts": ["rates.test"],
+                         "workflows": {"look": {"class": "inspect", "steps": [],
+                                                "means": "look"}}})
+ok("res/a host the profile calls official is official; another allowed host is secondary",
+   research.kind_for(OFFPROF, "https://rates.test/x") == research.OFFICIAL
+   and research.kind_for(OFFPROF, "https://supplier.test/x") == research.SECONDARY)
+
+rep = research.report([F1, F2], asked="compare grade A rates",
+                      not_found=["the November rate", "the freight component"])
+ok("res/the report lists what was NOT found, so two of five does not read as complete",
+   len(rep["not_found"]) == 2 and "2 thing(s) asked for were not found" in rep["say"],
+   rep["say"])
+ok("res/and names the uncertain claims in their own list",
+   rep["uncertain"] == [F2.claim], str(rep["uncertain"]))
+ok("res/every citation line carries its url and its retrieval time",
+   len(research.cites([F1, F2])) == 3
+   and all("read " in c and "http" in c for c in research.cites([F1, F2])),
+   str(research.cites([F1, F2]))[:140])
+ok("res/an empty report says nothing was found rather than returning an empty success",
+   "nothing was found" in research.report([], asked="x")["say"])
+
 # =================================================================== REPORT
 print("\n".join("PASS  " + n for n in PASS))
 if FAIL:

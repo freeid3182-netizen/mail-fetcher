@@ -70,6 +70,21 @@ def load(raw):
         if not _HOST.match(h.lstrip(".")):
             raise ProfileError("not a host: %r" % h)
 
+    # WHICH HOSTS THE OWNER CALLS AUTHORITATIVE (§3.3). Declared, never read off a hostname:
+    # anybody can register a name with "gov" in it, and research that treats the string as
+    # authority is research that can be aimed. A host cannot be official unless it is also a
+    # host this profile may read at all -- otherwise the profile is calling authoritative
+    # something it is not allowed to open.
+    official = [str(h).strip().lower().lstrip("*").lstrip(".")
+                for h in (raw.get("official_hosts") or []) if str(h).strip()]
+    for h in official:
+        if not _HOST.match(h):
+            raise ProfileError("not a host: %r" % h)
+        if not any(host_matches(h, a) for a in hosts):
+            raise ProfileError(
+                "official_hosts has %r, which this profile may not even read. Add it to "
+                "hosts, or take it out of official_hosts." % h)
+
     # Credentials are NAMES here and values never. The worker resolves a name against its own
     # secret store; the profile says which keys a site needs, exactly as bl-conn-<slug>.php
     # does in the portal. A value in this file would be a secret in a repository.
@@ -145,6 +160,7 @@ def load(raw):
         "slug": slug,
         "name": name,
         "hosts": hosts,
+        "official_hosts": official,
         "login": dict(raw.get("login") or {}),
         "credential_keys": cred_keys,
         "workflows": workflows,

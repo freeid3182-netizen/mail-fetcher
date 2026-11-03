@@ -451,6 +451,10 @@ else:
                           "hosts": ["127.0.0.1"],
                           "workflows": {"look": {"class": "inspect", "steps": [],
                                                  "means": "look at the page"}}})
+    OTHERPROF = profiles.load({"slug": "elsewhere", "name": "Elsewhere",
+                               "hosts": ["elsewhere.test"],
+                               "workflows": {"look": {"class": "inspect", "steps": [],
+                                                      "means": "look"}}})
     st = session.SessionStore(PDIR)
     with core.BrowserTask(headless=True, task_id="t3", download_dir=DL) as b3:
         b3.hands_goto(BASE + "/index.html", expect_host="127.0.0.1")
@@ -473,6 +477,55 @@ else:
     ok("profile/the exported state never reaches the task log",
        "yes-it-is" not in json.dumps(b3.log), "")
     shutil.rmtree(PDIR, ignore_errors=True)
+
+    # ---- CAPABILITY DISCOVERY (§4.4/10.2). It must report what the page HAS and refuse to
+    # decide what may be DONE to it: declaring a consequential control is declaring which
+    # control an approval presses, and a page does not get to choose that about itself.
+    import discover
+    with core.BrowserTask(headless=True, task_id="t6", download_dir=DL) as b6:
+        b6.hands_goto(BASE + "/index.html", expect_host="127.0.0.1")
+        f = discover.inspect(b6, PROF)
+        ok("disc/it finds the controls, the table and the search field that are really there",
+           f["controls"] > 3 and f["tables"] >= 1 and f["can_search"], json.dumps(f)[:200])
+        ok("disc/it sees the file input, so a workflow does not claim an upload blindly",
+           f["can_upload"], str(f["file_inputs"]))
+        ok("disc/it flags a download as a MAYBE, proved only by downloading one",
+           f["may_have_downloads"] and "MAY be a download" in f["say"], f["say"][:140])
+        ok("disc/every control that would act on the outside world is flagged for a person",
+           f["needs_a_person"] and all(v for v in f["needs_a_person"].values()),
+           str(sorted(f["needs_a_person"]))[:160])
+        ok("disc/and it says so in the sentence, not only in a field",
+           "need a person" in f["say"], f["say"][:160])
+
+        d = discover.draft_workflows(f)
+        ok("disc/the draft proposes only read-only workflows",
+           d["workflows"] and all(w["class"] in profiles.READ_CLASSES
+                                  for w in d["workflows"].values()),
+           str([(k, v["class"]) for k, v in d["workflows"].items()]))
+        ok("disc/it declares NO act control anywhere, because that is a person's decision",
+           not [w for w in d["workflows"].values() if "act" in w],
+           json.dumps(d["workflows"])[:160])
+        ok("disc/and the payload itself says it is not a profile, where a reader will see it",
+           "this_is_not_a_profile" in d and "slug" not in d and "hosts" not in d,
+           str(sorted(d)))
+
+        # A login screen first, because every other finding on it describes the login screen.
+        b6.hands_goto(BASE + "/other.html", expect_host="127.0.0.1")
+        g = discover.inspect(b6, PROF)
+        ok("disc/a sign-in page is called one BEFORE anything else is reported",
+           g["is_a_login_screen"] and g["say"].startswith("THIS IS A LOGIN SCREEN"),
+           g["say"][:120])
+        ok("disc/and the judgement is session.expiry_signs, not a second copy of that rule",
+           "session.expiry_signs" in open(os.path.join(HERE, "discover.py"),
+                                          encoding="utf-8").read())
+
+        b6.hands_goto(BASE + "/pages1.html", expect_host="127.0.0.1")
+        h = discover.inspect(b6, PROF)
+        ok("disc/pagination is found, and named, so eyes_pages can be aimed at it",
+           h["pagination"] and h["pagination_control"].lower() == "next",
+           json.dumps(h)[:160])
+        ok("disc/a host the profile does not allow is reported as such",
+           discover.inspect(b6, OTHERPROF)["on_a_host_the_profile_allows"] is False)
 
     httpd.shutdown()
 
