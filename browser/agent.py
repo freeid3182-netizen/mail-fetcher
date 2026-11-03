@@ -30,6 +30,7 @@ workflow is reported BLOCKED rather than guessed at; upgrade it when the portal 
 worker a chosen workflow name alongside the task, which is a portal-side planning step and
 belongs there, not here.
 """
+import json
 import os
 import sys
 
@@ -39,6 +40,7 @@ if HERE not in sys.path:
 
 import audit        # noqa: E402
 import core         # noqa: E402
+import discover     # noqa: E402
 import files        # noqa: E402
 import gate         # noqa: E402
 import profiles     # noqa: E402
@@ -293,8 +295,45 @@ class Agent(object):
                                     selector=step.get("selector"))
         if do == "read":
             return b.eyes_tables() if step.get("what") == "tables" else b.eyes_text()
+        if do == "read_pages":
+            # discover.draft_workflows EMITS this verb, so not handling it meant a drafted
+            # workflow failed on its own second step. Reaching the page cap is a failure in
+            # eyes_pages, deliberately: a list that was not read to its end was not read.
+            return b.eyes_pages(next_name=step.get("next", "Next"),
+                                max_pages=int(step.get("max_pages", 10)),
+                                read=step.get("what"))
+        if do == "scroll":
+            return b.hands_scroll(to=step.get("to", "down"),
+                                  pixels=int(step.get("pixels", 600)),
+                                  selector=step.get("selector"))
+        if do == "discover":
+            # §4.4: look at a portal and write down what it SUPPORTS. A report, never a
+            # profile -- discover refuses to propose a consequential workflow, so the verb
+            # cannot acquire a permission by being run.
+            found = discover.inspect(b, profile)
+            return core.ActionResult(
+                True, "read what this page supports", "the page's own controls and tables",
+                detail=found["say"], url=found["url"], title=found["title"],
+                evidence=[json.dumps(found, ensure_ascii=False)[:600]])
         if do == "screenshot":
             return b.eyes_screenshot(step.get("name", "step"))
+        # THE FIVE BELOW HAD NO VERB UNTIL THE SET LOOP IN test_agent FOUND THEM. Each was
+        # written, tested in core and reachable by nothing, which for `upload` meant the
+        # phase's own upload requirement could not be declared by any workflow at all. An
+        # upload is also the one here that is CONSEQUENTIAL in its own right, so it may only
+        # appear as a workflow's `act` -- profiles.load refuses an upload_final workflow that
+        # does not declare one, and `act` is never run from this loop.
+        if do == "upload":
+            return b.hands_upload(step.get("path") or "", name=step.get("name"),
+                                  selector=step.get("selector") or "input[type=file]")
+        if do == "press":
+            return b.hands_press(step.get("keys", "Enter"))
+        if do == "back":
+            return b.hands_back()
+        if do == "tab":
+            return b.hands_tab(index=step.get("index"))
+        if do == "tree":
+            return b.eyes_tree(depth_hint=step.get("depth"))
         return None
 
     def _url(self, profile, step):

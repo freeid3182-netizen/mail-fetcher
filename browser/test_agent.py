@@ -458,6 +458,53 @@ AG_SRC = open(os.path.join(HERE, "agent.py"), encoding="utf-8").read()
 ok("auth/the worker's code contains no road to the word 'stored'",
    '"stored"' not in AG_SRC and "'stored'" not in AG_SRC)
 
+# ============ 9. EVERY VERB A WORKFLOW CAN NAME HAS A HAND, AS A SET ======================
+# Step 10B's "unreachable code paths", from the side it actually bites: a capability that
+# exists in core.py and has no verb is a capability no workflow can reach, and a verb a
+# drafted workflow emits with no hand in _one_step is a workflow that fails on that step.
+# Both directions are checked as sets, so the next capability or the next drafted verb fails
+# here instead of in a run on a real portal.
+import re as _re                                                        # noqa: E402
+import discover as _disc                                                # noqa: E402
+
+VERBS = set(_re.findall(r'if do == "([a-z_]+)"', AG_SRC))
+ok("verbs/the step verbs are readable from the loop", len(VERBS) >= 8, str(sorted(VERBS)))
+
+FOUND = {"url": "https://supplier.test/list", "title": "List", "can_read": True,
+         "can_search": True, "pagination": True, "pagination_control": "Next",
+         "needs_a_person": {}}
+drafted = set()
+for w in (_disc.draft_workflows(FOUND).get("workflows") or {}).values():
+    for s in (w.get("steps") or []):
+        drafted.add(str(s.get("do")))
+ok("verbs/discovery drafts at least three kinds of step", len(drafted) >= 3, str(sorted(drafted)))
+ok("verbs/EVERY verb a drafted workflow emits has a hand in the worker",
+   not (drafted - VERBS), "no hand for: %s" % sorted(drafted - VERBS))
+
+# The other direction. A core capability with no verb is unreachable; the exceptions are named
+# here with the reason, so the list is a decision and not an oversight.
+CORE_SRC = open(os.path.join(HERE, "core.py"), encoding="utf-8").read()
+CAPS = set(_re.findall(r"def (hands_[a-z_]+|eyes_[a-z_]+)\(", CORE_SRC))
+# The only capability with no verb, and the reason it has none: a popup is followed inside
+# hands_click's own step. Everything else is declarable, which is what the loop enforces.
+NOT_A_VERB = {"hands_click_popup",
+              # the eyes the "read" and "discover" verbs use, never declared on their own
+              "eyes_where", "eyes_controls", "eyes_tables", "eyes_headings", "eyes_state",
+              "eyes_text"}
+VERB_OF = {"hands_goto": "goto", "hands_click": "click", "hands_type": "type",
+           "hands_select": "select", "hands_download": "download",
+           "eyes_screenshot": "screenshot", "eyes_pages": "read_pages",
+           "hands_scroll": "scroll", "hands_upload": "upload", "hands_press": "press",
+           "hands_back": "back", "hands_tab": "tab", "eyes_tree": "tree"}
+orphan = sorted(c for c in CAPS
+                if c not in NOT_A_VERB and VERB_OF.get(c) not in VERBS)
+ok("verbs/every capability in core is either a verb or named as deliberately not one",
+   not orphan, "unreachable: %s" % orphan)
+# research.py is the one module with no verb AND no exception, and that is reported rather
+# than hidden: it needs a search host the owner has not named, so nothing may call it yet.
+ok("verbs/research is reachable by nothing, which is the recorded blocker",
+   "research" not in AG_SRC, "")
+
 shutil.rmtree(PDIR, ignore_errors=True)
 
 httpd.shutdown()
