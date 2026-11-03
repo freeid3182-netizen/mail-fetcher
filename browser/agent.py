@@ -317,17 +317,35 @@ class Agent(object):
                 evidence=[json.dumps(found, ensure_ascii=False)[:600]])
         if do == "screenshot":
             return b.eyes_screenshot(step.get("name", "step"))
-        # THE FIVE BELOW HAD NO VERB UNTIL THE SET LOOP IN test_agent FOUND THEM. Each was
-        # written, tested in core and reachable by nothing, which for `upload` meant the
-        # phase's own upload requirement could not be declared by any workflow at all. An
-        # upload is also the one here that is CONSEQUENTIAL in its own right, so it may only
-        # appear as a workflow's `act` -- profiles.load refuses an upload_final workflow that
-        # does not declare one, and `act` is never run from this loop.
-        if do == "upload":
-            return b.hands_upload(step.get("path") or "", name=step.get("name"),
-                                  selector=step.get("selector") or "input[type=file]")
+        # THESE HAD NO VERB UNTIL THE SET LOOP IN test_agent FOUND THEM: written, tested in
+        # core, reachable by nothing.
+        #
+        # `upload` IS NOT AMONG THEM, AND THE FIRST VERSION OF THIS BLOCK HAD IT. A commit
+        # security review caught it within the hour and was right. `steps` are the steps that
+        # run BEFORE anybody approves anything, so an upload verb here is a consequential
+        # action with no approval -- and `upload_final` is a consequential class in this
+        # codebase's own vocabulary, so the system already classified it. Worse, its `path`
+        # came out of the profile, which would let a reviewed file name any file on the runner
+        # -- the vault, an encrypted session -- and hand it to a portal. The comment that used
+        # to sit here claimed an upload "may only appear as a workflow's act"; nothing enforced
+        # that, and the approved path presses one named control and cannot carry out an upload
+        # at all. A comment asserting a property the code does not have is the same mistake as
+        # the approval hash that said it covered both halves. So: there is no upload verb,
+        # profiles.load refuses one in `steps`, and `core.hands_upload` is reachable by nothing
+        # until an approved-upload path is designed. That is recorded as a limitation, not
+        # worked around.
         if do == "press":
-            return b.hands_press(step.get("keys", "Enter"))
+            # Enter on a focused form is a submit, which is the same hole as an upload by
+            # another road. Navigation keys only; a workflow that needs to submit declares an
+            # `act` and waits for a person.
+            keys = str(step.get("keys") or "")
+            if keys.lower().replace("numpad", "") in ("enter", "return", ""):
+                return core.ActionResult(
+                    False, "refused a key press", "the key was read before anything was sent",
+                    detail="a step may not press %r: on a focused form that is a submit, and "
+                           "a submission is a person's decision. Declare it as the workflow's "
+                           "act." % keys)
+            return b.hands_press(keys)
         if do == "back":
             return b.hands_back()
         if do == "tab":

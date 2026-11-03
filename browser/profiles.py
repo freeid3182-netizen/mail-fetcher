@@ -35,6 +35,23 @@ ALL_CLASSES = READ_CLASSES + CONSEQUENTIAL_CLASSES
 
 _HOST = re.compile(r"^[a-z0-9.-]+$")
 
+# WHAT A `steps` ENTRY MAY ASK FOR, as an allowlist rather than a list of things to refuse.
+#
+# `steps` run BEFORE a person has approved anything, so a verb in here must be one that a
+# worker may carry out unattended. A commit security review found `upload` had been added to
+# the worker's step loop: an upload is `upload_final` in this file's own class vocabulary --
+# consequential -- and its path came out of the profile, so a reviewed file could have named
+# any file on the runner and handed it to a portal. An allowlist rather than a denylist because
+# the next verb somebody adds must be CLASSIFIED to be usable, and the failure then is a
+# refused profile rather than an unapproved action.
+#
+# `click` and `type` are here, and that is the accepted position of this design rather than an
+# oversight: a consequential workflow declares the ONE control a person's approval presses as
+# its `act`, which is not in `steps` and is never run from the step loop. What is refused here
+# is the verb the system itself classifies as consequential.
+SAFE_STEP_VERBS = ("goto", "click", "type", "select", "download", "read", "read_pages",
+                   "scroll", "screenshot", "tree", "back", "tab", "discover", "press")
+
 
 class ProfileError(ValueError):
     """A profile that cannot be trusted is not loaded. There is no partial profile."""
@@ -115,6 +132,16 @@ def load(raw):
         steps = w.get("steps") or []
         if not isinstance(steps, list):
             raise ProfileError("workflow %r steps must be a list" % wname)
+        for i, s in enumerate(steps):
+            if not isinstance(s, dict):
+                raise ProfileError("workflow %r step %d must be an object" % (wname, i + 1))
+            verb = str(s.get("do") or "").strip().lower()
+            if verb not in SAFE_STEP_VERBS:
+                raise ProfileError(
+                    "workflow %r step %d asks for %r. A step runs BEFORE anybody has approved "
+                    "anything, so it must be one of: %s. A consequential action is declared as "
+                    "the workflow's \"act\", where a person decides on it."
+                    % (wname, i + 1, verb, ", ".join(SAFE_STEP_VERBS)))
 
         # THE CONSEQUENTIAL STEP IS DECLARED SEPARATELY, AND THAT IS A STRUCTURAL GUARANTEE
         # RATHER THAN A CONVENTION. `steps` are the safe ones and the agent runs them; `act` is

@@ -467,6 +467,22 @@ ok("auth/the worker's code contains no road to the word 'stored'",
 import re as _re                                                        # noqa: E402
 import discover as _disc                                                # noqa: E402
 
+
+class _FakeAgent(object):
+    """Enough of an Agent to call _one_step for a refusal that happens before any browser
+    call. A refusal that needed a browser to prove would not be a refusal worth having."""
+
+
+def _step_why():
+    """The load refusal for a consequential step, as a person would read it."""
+    try:
+        profiles.load({"slug": "stepwhy", "name": "Step why", "hosts": ["supplier.test"],
+                       "workflows": {"w": {"class": "inspect",
+                                           "steps": [{"do": "upload"}]}}})
+    except profiles.ProfileError as e:
+        return str(e)
+    return ""
+
 VERBS = set(_re.findall(r'if do == "([a-z_]+)"', AG_SRC))
 ok("verbs/the step verbs are readable from the loop", len(VERBS) >= 8, str(sorted(VERBS)))
 
@@ -490,11 +506,17 @@ CAPS = set(_re.findall(r"def (hands_[a-z_]+|eyes_[a-z_]+)\(", CORE_SRC))
 NOT_A_VERB = {"hands_click_popup",
               # the eyes the "read" and "discover" verbs use, never declared on their own
               "eyes_where", "eyes_controls", "eyes_tables", "eyes_headings", "eyes_state",
-              "eyes_text"}
+              "eyes_text",
+              # DELIBERATELY REACHABLE BY NOTHING. A step runs before anybody approves, so an
+              # upload cannot be a step; the approved path presses one named control and
+              # cannot carry out an upload. Until an approved-upload path exists there is
+              # nowhere legitimate for a verb to live, and the capability stays unreachable
+              # rather than reachable without an approval.
+              "hands_upload"}
 VERB_OF = {"hands_goto": "goto", "hands_click": "click", "hands_type": "type",
            "hands_select": "select", "hands_download": "download",
            "eyes_screenshot": "screenshot", "eyes_pages": "read_pages",
-           "hands_scroll": "scroll", "hands_upload": "upload", "hands_press": "press",
+           "hands_scroll": "scroll", "hands_press": "press",
            "hands_back": "back", "hands_tab": "tab", "eyes_tree": "tree"}
 orphan = sorted(c for c in CAPS
                 if c not in NOT_A_VERB and VERB_OF.get(c) not in VERBS)
@@ -504,6 +526,52 @@ ok("verbs/every capability in core is either a verb or named as deliberately not
 # than hidden: it needs a search host the owner has not named, so nothing may call it yet.
 ok("verbs/research is reachable by nothing, which is the recorded blocker",
    "research" not in AG_SRC, "")
+
+# ============ 10. A STEP CANNOT BE A CONSEQUENTIAL ACTION ==================================
+# The hole a commit security review found within the hour of it being written: `upload` had
+# been added to the step loop, and `steps` run BEFORE anybody approves anything. Asserted from
+# both ends, as sets, because this control has to hold for the verb nobody has invented yet.
+ok("step/the safe step verbs are an ALLOWLIST, so a new verb must be classified to be usable",
+   isinstance(profiles.SAFE_STEP_VERBS, tuple) and len(profiles.SAFE_STEP_VERBS) >= 10,
+   str(profiles.SAFE_STEP_VERBS))
+ok("step/no verb the system classifies as consequential is in it",
+   not [v for v in profiles.CONSEQUENTIAL_CLASSES if v in profiles.SAFE_STEP_VERBS],
+   str([v for v in profiles.CONSEQUENTIAL_CLASSES if v in profiles.SAFE_STEP_VERBS]))
+ok("step/upload above all is not a safe step verb",
+   "upload" not in profiles.SAFE_STEP_VERBS and 'do == "upload"' not in AG_SRC, "")
+
+# EVERY consequential class, as a step, is refused AT LOAD. One loop, so the next class added
+# to CONSEQUENTIAL_CLASSES is covered by arriving there.
+got_in = []
+for cls in profiles.CONSEQUENTIAL_CLASSES:
+    try:
+        profiles.load({"slug": "stepcheck", "name": "Step check",
+                       "hosts": ["supplier.test"],
+                       "workflows": {"w": {"class": "inspect",
+                                           "steps": [{"do": cls, "path": "/etc/passwd"}]}}})
+        got_in.append(cls)
+    except profiles.ProfileError:
+        pass
+ok("step/EVERY consequential verb is refused in steps, at load, over the whole class set",
+   not got_in, str(got_in))
+ok("step/and the refusal says where a consequential action belongs instead",
+   "where a person decides on it" in _step_why(), _step_why()[:120])
+ok("step/a profile of ordinary safe steps still loads",
+   profiles.load({"slug": "stepok", "name": "Step ok", "hosts": ["supplier.test"],
+                  "workflows": {"w": {"class": "inspect",
+                                      "steps": [{"do": "goto"}, {"do": "read_pages"},
+                                                {"do": "scroll"}, {"do": "discover"}]}}}
+                 )["workflows"]["w"]["class"] == "inspect", "")
+
+# Pressing Enter is a submit on a focused form, so it is refused as a step the same way --
+# checked through the step loop itself, with no browser, because the refusal happens before
+# anything is sent.
+_pressed = agent.Agent.__dict__["_one_step"](
+    _FakeAgent(), None, {"slug": "x", "hosts": ["supplier.test"]},
+    {"do": "press", "keys": "Enter"})
+ok("step/a step that presses Enter is refused before anything is sent",
+   _pressed is not None and _pressed.ok is False and "a submission is a person's decision"
+   in _pressed.detail, str(_pressed)[:140])
 
 shutil.rmtree(PDIR, ignore_errors=True)
 
