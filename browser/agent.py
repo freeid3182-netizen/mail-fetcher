@@ -42,6 +42,7 @@ import core         # noqa: E402
 import files        # noqa: E402
 import gate         # noqa: E402
 import profiles     # noqa: E402
+import session      # noqa: E402
 import vault as vaultmod  # noqa: E402
 
 
@@ -108,7 +109,8 @@ def pick_portal(task, known):
 
 
 class Agent(object):
-    def __init__(self, portal, profiles_dir=None, env=None, task_dir=None):
+    def __init__(self, portal, profiles_dir=None, env=None, task_dir=None,
+                 session_dir=None):
         self.portal = portal
         self.vault = vaultmod.Vault(env if env is not None else os.environ)
         portal.vault = self.vault
@@ -116,6 +118,10 @@ class Agent(object):
             profiles_dir or os.path.join(HERE, "portals"))
         self.trail = audit.Trail(vault=self.vault)
         self.task_dir = task_dir or os.path.join(HERE, "_tasks")
+        # Authenticated profiles, encrypted. One store, so a task never reads a directory it
+        # was not given: see session.py for why the file is not the permission.
+        self.sessions = session.SessionStore(
+            session_dir or os.path.join(HERE, "_profiles"))
 
     # ---- the loop ----------------------------------------------------------------
     def run_once(self, limit=3):
@@ -175,10 +181,45 @@ class Agent(object):
         tid = task["id"]
         downloads = os.path.join(self.task_dir, tid)
         evidence = []
+        # THE STORED SESSION, IF THERE IS ONE. A missing one is not an error: the first task
+        # for a portal runs signed out, hits the login page and stops for the owner, which is
+        # exactly §5.3. A session that cannot be DECRYPTED is also not an error here -- it is
+        # reported and the task runs signed out, because a wrong key is not a reason to lose
+        # the task.
+        state = None
+        try:
+            state = self.sessions.load(profile["slug"], profile)
+        except session.SessionError as e:
+            self.portal.conn_say(profile["slug"], "expired", str(e)[:200])
         with core.BrowserTask(headless=True, task_id=tid, download_dir=downloads,
-                             vault=self.vault) as b:
+                             vault=self.vault, storage_state=state) as b:
+            signed_in = False
             for i, step in enumerate(steps):
                 res = self._one_step(b, profile, step)
+                # §5.5. Read from the PAGE after every step, because a session dies between
+                # two steps as readily as before the first, and every action after it fails
+                # for a reason that reads like a layout change.
+                if res is not None:
+                    gone, why = session.expiry_signs(
+                        (res.title or "") + " " + (res.detail or ""), res.url, profile)
+                    if gone:
+                        self.portal.need_auth(tid, profile["slug"], why)
+                        self.trail.append(audit.row(
+                            uid=task.get("uid", ""), task_id=tid, portal=profile["slug"],
+                            operation=workflow, action_class=facts["action_class"],
+                            outcome="waiting_for_auth",
+                            execution_location=self.portal.location,
+                            detail="the portal wants a login step a worker cannot do: " + why,
+                            url=res.url))
+                        return "%s WAITING_FOR_AUTH (%s)" % (tid, why)
+                    if res.ok and state is not None and not signed_in:
+                        # The stored session WORKED: a page on this portal's own host that is
+                        # not a login screen. That, and only that, writes "verified" -- the
+                        # portal refuses the word without the thing that proved it.
+                        signed_in = True
+                        self.portal.conn_say(profile["slug"], "verified",
+                                             "reached %r with the stored session"
+                                             % (res.title or res.url)[:120])
                 if res is None:
                     self.portal.state(tid, "FAILED",
                                       "step %d asks for %r, which this worker has no hand for"

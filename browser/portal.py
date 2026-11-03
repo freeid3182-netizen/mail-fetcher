@@ -121,6 +121,18 @@ class Portal(object):
             b["workflow"] = workflow
         return self._say("btask_state", b)
 
+    def conn_say(self, portal, status, detail=""):
+        """Report what was OBSERVED about a stored session. 'stored' is refused by the portal:
+        that word means the owner logged in, and only the owner may say so."""
+        return self._say("btask_conn_say",
+                         {"portal": portal, "status": status, "detail": detail})
+
+    def need_auth(self, task_id, portal, why):
+        """An OTP, a CAPTCHA or a security check. The task waits for the owner; it does NOT
+        fail, because a failed task is retried from the queue into the same wall."""
+        return self._say("btask_need_auth",
+                         {"task": task_id, "portal": portal, "why": why})
+
     def file(self, task_id, provenance):
         return self._say("btask_file", {"task": task_id, "provenance": provenance})
 

@@ -375,6 +375,91 @@ ok("client/the client sends a user agent the host's firewall will not 403",
 ok("client/and busts the cache in front of api.php on every call",
    'q["cb"]' in open(os.path.join(HERE, "portal.py"), encoding="utf-8").read())
 
+# =========== AUTHENTICATED PROFILES AND THE LOGIN THE WORKER CANNOT DO (§5.3/5.5) ===========
+import shutil        # noqa: E402
+import tempfile      # noqa: E402
+
+import session       # noqa: E402
+
+os.environ[session.KEY_ENV] = "a passphrase only the worker has"
+PDIR = tempfile.mkdtemp(prefix="atoz-agent-prof-")
+
+# 1. NO STORED SESSION IS NOT AN ERROR. The first task for a portal runs signed out, which is
+#    §5.3's whole premise, and it must not look like a crash.
+a1, fp1, t1 = make(SUPPLIER, "list the documents", ["inspect"])
+a1.sessions = session.SessionStore(os.path.join(PDIR, "empty"))
+fp1.queue = [t1]
+said1 = a1.run_task(t1)
+ok("sess/with no stored session the task still runs, signed out",
+   "COMPLETED" in said1, said1)
+ok("sess/and nothing is claimed about a connection that does not exist",
+   not fp1.body("btask_conn_say"), str(fp1.body("btask_conn_say")))
+
+# 2. A STORED SESSION THAT WORKS writes 'verified', and only with the page that proved it --
+#    the portal refuses the word without one, so the worker must supply it.
+a2, fp2, t2 = make(SUPPLIER, "list the documents", ["inspect"])
+st2 = session.SessionStore(os.path.join(PDIR, "good"))
+st2.save("fictional-supplier",
+         {"cookies": [{"name": "SID", "value": "x", "domain": "127.0.0.1", "path": "/"}],
+          "origins": []},
+         a2.profiles["fictional-supplier"], verified_by="set up by this test")
+a2.sessions = st2
+a2.run_task(t2)
+says2 = fp2.body("btask_conn_say")
+ok("sess/a stored session that reaches a real page is reported VERIFIED",
+   [s for s in says2 if s.get("status") == "verified"], str(says2)[:200])
+ok("sess/and the report carries the page that proved it, never a bare claim",
+   all(str(s.get("detail", "")).strip() for s in says2 if s.get("status") == "verified"),
+   str(says2)[:200])
+ok("sess/it is reported ONCE, not after every step",
+   len([s for s in says2 if s.get("status") == "verified"]) == 1, str(len(says2)))
+
+# 3. A SESSION FOR THE WRONG PORTAL is refused by the store, reported as expired, and the task
+#    still runs: the isolation refusal must not lose the owner's task.
+a3, fp3, t3 = make(SUPPLIER, "list the documents", ["inspect"])
+st3 = session.SessionStore(os.path.join(PDIR, "crossed"))
+OTHER = profiles.load({"slug": "elsewhere", "name": "Elsewhere",
+                       "hosts": ["elsewhere.test"],
+                       "workflows": {"look": {"class": "inspect", "steps": [],
+                                              "means": "look"}}})
+st3.save("fictional-supplier",
+         {"cookies": [{"name": "SID", "value": "x", "domain": "elsewhere.test", "path": "/"}],
+          "origins": []}, OTHER, verified_by="set up by this test")
+a3.sessions = st3
+said3 = a3.run_task(t3)
+says3 = fp3.body("btask_conn_say")
+ok("sess/a session belonging to another portal is NOT loaded, and is reported expired",
+   [s for s in says3 if s.get("status") == "expired"], str(says3)[:200])
+ok("sess/and the task is not lost over it", "COMPLETED" in said3, said3)
+
+# 4. §5.5 — A LOGIN STEP A WORKER CANNOT DO. The fixture's other.html is a sign-in page, so a
+#    workflow that lands there is the real shape of an expired session.
+EXPIRED = dict(SUPPLIER)
+EXPIRED["workflows"] = dict(SUPPLIER["workflows"])
+EXPIRED["workflows"]["lands_on_login"] = {
+    "class": "inspect", "means": "a workflow whose portal has signed us out",
+    "steps": [{"do": "goto", "url": BASE + "/other.html"}, {"do": "read"}]}
+a4, fp4, t4 = make(EXPIRED, "lands on login", ["inspect"])
+a4.sessions = session.SessionStore(os.path.join(PDIR, "expired"))
+said4 = a4.run_task(t4)
+ok("auth/a sign-in page stops the task for the OWNER, not as a failure",
+   "WAITING_FOR_AUTH" in said4 and "FAILED" not in said4, said4)
+na = fp4.body("btask_need_auth")
+ok("auth/and the portal is told which site wants what, in words the owner can act on",
+   na and na[0].get("portal") == "fictional-supplier" and len(na[0].get("why", "")) > 10,
+   str(na)[:200])
+ok("auth/no state word is sent that would retry it from the queue",
+   "FAILED" not in [b.get("state") for b in fp4.body("btask_state")],
+   str([b.get("state") for b in fp4.body("btask_state")]))
+
+# The worker never writes 'stored': that word means the owner logged in, and api.php refuses it
+# from a worker. Asserted on the SOURCE, because a run that happens not to hit it proves little.
+AG_SRC = open(os.path.join(HERE, "agent.py"), encoding="utf-8").read()
+ok("auth/the worker's code contains no road to the word 'stored'",
+   '"stored"' not in AG_SRC and "'stored'" not in AG_SRC)
+
+shutil.rmtree(PDIR, ignore_errors=True)
+
 httpd.shutdown()
 print()
 for f in FAIL:

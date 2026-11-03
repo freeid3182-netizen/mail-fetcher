@@ -26,6 +26,7 @@ Three more that are structural, not stylistic:
 
 Nothing here reaches the portal or holds a credential. That is the caller's job.
 """
+import json
 import os
 import re
 import time
@@ -139,7 +140,8 @@ class BrowserTask(object):
     """
 
     def __init__(self, headless=True, task_id="t0", download_dir="downloads",
-                 budget=None, viewport=(1366, 900), profile=None, audit=None, vault=None):
+                 budget=None, viewport=(1366, 900), profile=None, audit=None, vault=None,
+                 storage_state=None):
         self.headless = bool(headless)
         self.task_id = str(task_id)
         self.download_dir = download_dir
@@ -151,6 +153,9 @@ class BrowserTask(object):
         # it. Every path out of this class goes through _record, so a credential that reached a
         # page cannot reach the log, the audit row or a failure message.
         self._vault = vault
+        # An authenticated profile, already decrypted by session.SessionStore.load. It is held
+        # only to hand to new_context and is never recorded: see export_state.
+        self._storage_state = storage_state
         self._pw = None
         self.browser = None
         self.ctx = None
@@ -163,9 +168,13 @@ class BrowserTask(object):
         os.makedirs(self.download_dir, exist_ok=True)
         self._pw = sync_playwright().start()
         self.browser = self._pw.chromium.launch(headless=self.headless)
-        self.ctx = self.browser.new_context(
-            accept_downloads=True,
-            viewport={"width": self.viewport[0], "height": self.viewport[1]})
+        # A fresh context per task, with this portal's own authenticated state if there is one.
+        # One context per task is what keeps two portals' sessions apart inside one browser.
+        kw = {"accept_downloads": True,
+              "viewport": {"width": self.viewport[0], "height": self.viewport[1]}}
+        if self._storage_state is not None:
+            kw["storage_state"] = self._storage_state
+        self.ctx = self.browser.new_context(**kw)
         self.ctx.set_default_timeout(20000)
         self.page = self.ctx.new_page()
         # An unexpected dialog blocks a headless browser for ever. They are dismissed and
@@ -530,6 +539,128 @@ class BrowserTask(object):
         return self._record(ActionResult(True, "switch to tab %d" % index,
                                          "the active page's url after switching",
                                          self._url(), self._url(), self._title()))
+
+    def hands_scroll(self, to="down", pixels=600, selector=None):
+        """Scroll the page, or an element, and report what changed.
+
+        A portal that loads its rows as you scroll is the ordinary case, and without this the
+        agent reads the first screen and concludes the rest is not there. `to` is "down", "up",
+        "top", "bottom" or an element to bring into view.
+        """
+        self.budget.spend()
+        before = self.page.evaluate("() => [window.scrollY, document.body.scrollHeight]")
+        try:
+            if selector is not None:
+                self.page.locator(selector).first.scroll_into_view_if_needed(timeout=10000)
+                what = "scroll to " + selector
+            elif to == "top":
+                self.page.evaluate("() => window.scrollTo(0, 0)")
+                what = "scroll to the top"
+            elif to == "bottom":
+                self.page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+                what = "scroll to the bottom"
+            else:
+                n = -abs(pixels) if to == "up" else abs(pixels)
+                self.page.evaluate("n => window.scrollBy(0, n)", n)
+                what = "scroll %s %dpx" % (to, abs(pixels))
+        except PWError as e:
+            return self._fail("scroll", str(e)[:200])
+        self.page.wait_for_timeout(250)
+        after = self.page.evaluate("() => [window.scrollY, document.body.scrollHeight]")
+        return self._record(ActionResult(
+            True, what, "the scroll position and page height, read after the scroll",
+            "at %d of %d, was %d of %d" % (after[0], after[1], before[0], before[1]),
+            self._url(), self._title(),
+            evidence=[{"y": after[0], "height": after[1], "grew": after[1] > before[1]}]))
+
+    def hands_click_popup(self, by_role=None, name=None, selector=None, expect_host=None):
+        """Click something that opens a NEW WINDOW, and switch to it.
+
+        hands_click waits for the current page; a control that opens a popup leaves it looking
+        unchanged, so the click reads as a failure and the real page is never looked at. The
+        new page's host is checked when the caller names one, for the same reason hands_goto
+        checks it: a popup is a navigation the page chose, not one we did.
+        """
+        self.budget.spend()
+        loc, how = self._find(by_role, name, selector)
+        what = "click (popup) " + (name or selector or "")
+        if loc is None:
+            return self._fail(what, how)
+        try:
+            with self.ctx.expect_page(timeout=20000) as caught:
+                loc.click(timeout=15000)
+            new = caught.value
+            new.wait_for_load_state("load", timeout=20000)
+        except PWError as e:
+            return self._fail(what, "no new window appeared: " + str(e)[:160])
+        # profiles.host_of / host_matches, never a substring test -- the same rule hands_goto
+        # uses, and written there once on purpose.
+        host = profiles.host_of(new.url)
+        if expect_host is not None and not profiles.host_matches(host, expect_host):
+            # The popup is left open and NOT switched to: whatever it is, it is not the place
+            # the caller said it would be, and acting on it is how an agent ends up on a page
+            # nobody authorised.
+            return self._fail(what, "the popup is on %s, not %s" % (host, expect_host))
+        self.page = new
+        return self._record(ActionResult(True, what, "the new window's own url, after it loaded",
+                                         self._url(), self._url(), self._title()))
+
+    def export_state(self):
+        """The context's cookies and storage, for session.SessionStore.save.
+
+        Returned, never logged and never put in an ActionResult: this is the authenticated
+        session itself, and _record would write it to the task log and the audit row. The
+        caller hands it straight to the store, which encrypts it.
+        """
+        return self.ctx.storage_state()
+
+    def eyes_pages(self, next_name="Next", max_pages=10, read=None):
+        """Read a paginated list to its end, or to max_pages, whichever comes first.
+
+        WHY THIS IS NOT A LOOP IN THE CALLER. Every workflow that reads a list would write the
+        same loop, and the two things that are easy to get wrong -- stopping when the Next
+        control is absent OR disabled, and stopping when the page stops changing -- would be
+        got wrong separately each time. A list that never stops is a budget burnt in silence,
+        so max_pages is a cap and reaching it is reported, not treated as the end.
+        """
+        read = read or (lambda: self.eyes_tables())
+        pages, seen = [], set()
+        for i in range(max_pages):
+            res = read()
+            pages.append(res.as_dict() if hasattr(res, "as_dict") else res)
+            key = (self._url(), json.dumps(pages[-1], sort_keys=True)[:400])
+            if key in seen:
+                return self._record(ActionResult(
+                    True, "read %d page(s)" % len(pages), "each page read, and one repeated",
+                    "stopped because page %d was the same as one already read" % (i + 1),
+                    self._url(), self._title(), evidence=pages))
+            seen.add(key)
+            nxt, _how = self._find("link", next_name)
+            if nxt is None:
+                nxt, _how = self._find("button", next_name)
+            if nxt is None:
+                return self._record(ActionResult(
+                    True, "read %d page(s)" % len(pages), "each page read, then no Next control",
+                    "reached the end of the list", self._url(), self._title(), evidence=pages))
+            try:
+                if nxt.is_disabled():
+                    return self._record(ActionResult(
+                        True, "read %d page(s)" % len(pages),
+                        "each page read, then Next was disabled",
+                        "reached the end of the list", self._url(), self._title(),
+                        evidence=pages))
+            except PWError:
+                pass
+            step = self.hands_click(by_role="link", name=next_name)
+            if not step.ok:
+                step = self.hands_click(by_role="button", name=next_name)
+            if not step.ok:
+                return self._fail("read page %d" % (i + 2), "Next would not click")
+        return self._record(ActionResult(
+            False, "read %d page(s)" % len(pages),
+            "the page cap was reached, so the list was NOT read to its end",
+            "stopped at the %d-page cap; there may be more" % max_pages,
+            self._url(), self._title(), evidence=pages))
 
     def hands_download(self, by_role=None, name=None, selector=None, expect_suffix=None):
         """Click something and WAIT FOR THE FILE, then check the bytes exist.

@@ -28,6 +28,7 @@ import threading
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+import json         # noqa: E402
 import core          # noqa: E402
 import profiles      # noqa: E402
 
@@ -376,6 +377,51 @@ else:
         ok("retry/a read is retried and then succeeds", rr.ok and len(calls) == 2,
            "%d call(s)" % len(calls))
 
+        # ---- SCROLL. A portal that loads rows as you scroll reads as an empty list without
+        # this, and "it scrolled" is only true if the position actually moved.
+        b.hands_goto(BASE + "/pages1.html", expect_host="127.0.0.1")
+        sc = b.hands_scroll("bottom")
+        ok("scroll/it reaches the bottom and the position PROVES it",
+           sc.ok and sc.evidence[0]["y"] > 0, repr(sc))
+        up = b.hands_scroll("top")
+        ok("scroll/and back to the top", up.ok and up.evidence[0]["y"] == 0, repr(up))
+        el = b.hands_scroll(selector="#deep")
+        ok("scroll/an element can be brought into view by name",
+           el.ok and "#deep" in el.what, repr(el))
+        bad = b.hands_scroll(selector="#there-is-no-such-thing")
+        ok("scroll/and a scroll to something absent FAILS rather than reporting success",
+           not bad.ok, repr(bad))
+
+        # ---- PAGINATION, as one helper rather than the same loop in every workflow. Three
+        # fixture pages: the last keeps its Next control and disables it.
+        pg = b.eyes_pages(next_name="Next", max_pages=10)
+        ok("pages/it reads every page of the list", pg.ok and "3 page(s)" in pg.what, repr(pg))
+        ok("pages/and says WHY it stopped, so the end is not a guess",
+           "end of the list" in pg.detail and "disabled" in pg.verified_by, repr(pg))
+        ok("pages/every page's rows come back, not only the last one's",
+           len(pg.evidence) == 3, str(len(pg.evidence)))
+        b.hands_goto(BASE + "/pages1.html", expect_host="127.0.0.1")
+        cap = b.eyes_pages(next_name="Next", max_pages=2)
+        ok("pages/reaching the cap is a FAILURE, because the list was not read to its end",
+           not cap.ok and "may be more" in cap.detail, repr(cap))
+
+        # ---- POPUPS. hands_click waits for the current page, so a control that opens a new
+        # window reads as a dead button and the real page is never looked at.
+        b.hands_goto(BASE + "/index.html", expect_host="127.0.0.1")
+        pop = b.hands_click_popup(by_role="link", name="Open In New Tab",
+                                  expect_host="127.0.0.1")
+        ok("popup/a click that opens a new window is followed into it",
+           pop.ok and "other.html" in pop.url, repr(pop))
+        ok("popup/and the verification is the NEW window's own url",
+           "new window's own url" in pop.verified_by, pop.verified_by)
+        b.hands_goto(BASE + "/index.html", expect_host="127.0.0.1")
+        popbad = b.hands_click_popup(by_role="link", name="Open In New Tab",
+                                     expect_host="supplier.test")
+        ok("popup/a popup on a host the caller did not name is REFUSED, not switched to",
+           not popbad.ok and "not supplier.test" in popbad.detail, repr(popbad))
+        ok("popup/and the refusal leaves us on the page we were on",
+           "index.html" in b.eyes_where().url, b.eyes_where().url)
+
     # ---- the budget, in its own task so the cap is reached cheaply
     with core.BrowserTask(headless=True, task_id="t2", download_dir=DL,
                           budget=core.Budget(max_actions=3)) as b2:
@@ -389,6 +435,44 @@ else:
         ok("budget/the action cap bites, and says what it was", spent)
         ok("budget/what is left can be read", set(b2.budget.left()) ==
            {"actions", "seconds", "bytes"})
+
+    # ---- AUTHENTICATED PROFILE, through a real browser (§5.2/5.4).
+    # The guards suite proves the FILE is encrypted and isolated. This proves the mechanism:
+    # state exported from one browser is honoured by a second one that never saw the login.
+    # It does NOT prove persistence across a machine -- the directory here lives as long as
+    # this test does, and on the CI runner it dies with the job.
+    import shutil
+    import tempfile
+
+    import session
+    os.environ[session.KEY_ENV] = "a passphrase only the worker has"
+    PDIR = tempfile.mkdtemp(prefix="atoz-prof-live-")
+    PROF = profiles.load({"slug": "fixture", "name": "Local Fixture",
+                          "hosts": ["127.0.0.1"],
+                          "workflows": {"look": {"class": "inspect", "steps": [],
+                                                 "means": "look at the page"}}})
+    st = session.SessionStore(PDIR)
+    with core.BrowserTask(headless=True, task_id="t3", download_dir=DL) as b3:
+        b3.hands_goto(BASE + "/index.html", expect_host="127.0.0.1")
+        b3.page.evaluate("() => { document.cookie = 'SIGNEDIN=yes-it-is; path=/'; }")
+        state = b3.export_state()
+    ok("profile/the state exported from a browser names the host it authenticates",
+       "127.0.0.1" in session.hosts_in(state), str(session.hosts_in(state)))
+    st.save("fixture", state, PROF, verified_by="the cookie was set on the fixture page")
+    with core.BrowserTask(headless=True, task_id="t4", download_dir=DL,
+                          storage_state=st.load("fixture", PROF)) as b4:
+        b4.hands_goto(BASE + "/index.html", expect_host="127.0.0.1")
+        got = b4.page.evaluate("() => document.cookie")
+    ok("profile/a SECOND browser that never saw the login is signed in from the stored profile",
+       "SIGNEDIN=yes-it-is" in got, got[:120])
+    with core.BrowserTask(headless=True, task_id="t5", download_dir=DL) as b5:
+        b5.hands_goto(BASE + "/index.html", expect_host="127.0.0.1")
+        bare = b5.page.evaluate("() => document.cookie")
+    ok("profile/and a browser WITHOUT the profile is not signed in, so the test means something",
+       "SIGNEDIN" not in bare, bare[:120])
+    ok("profile/the exported state never reaches the task log",
+       "yes-it-is" not in json.dumps(b3.log), "")
+    shutil.rmtree(PDIR, ignore_errors=True)
 
     httpd.shutdown()
 

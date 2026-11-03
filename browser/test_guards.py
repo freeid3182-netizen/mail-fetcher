@@ -21,6 +21,7 @@ The four headline properties, in one line each:
 Usage:  .venv-browser/Scripts/python mail-fetcher/browser/test_guards.py
 """
 import datetime
+import io
 import json
 import os
 import sys
@@ -439,6 +440,136 @@ for n in os.listdir(TMP):
     os.remove(os.path.join(TMP, n))
 os.rmdir(TMP)
 
+
+# ============================ AUTHENTICATED PROFILES (§5.2/5.4/5.6) ==================
+# A stored profile IS the ability to be the owner on that portal, so this section is about a
+# credential store, not a cache. Everything here is a refusal.
+import shutil        # noqa: E402
+import tempfile      # noqa: E402
+
+import session       # noqa: E402
+
+SDIR = tempfile.mkdtemp(prefix="atoz-prof-")
+SUPP = profiles.load({"slug": "supplier", "name": "Fictional Supplier",
+                      "hosts": ["supplier.test"],
+                      "workflows": {"look": {"class": "inspect", "steps": [],
+                                             "means": "look at the dashboard"}}})
+MAIL = profiles.load({"slug": "webmail", "name": "Fictional Webmail",
+                      "hosts": ["mail.test"],
+                      "workflows": {"look": {"class": "inspect", "steps": [],
+                                             "means": "look at the inbox"}}})
+STATE = {"cookies": [{"name": "SID", "value": "s3cr3t-session-value", "domain": ".supplier.test",
+                      "path": "/"}],
+         "origins": [{"origin": "https://supplier.test",
+                      "localStorage": [{"name": "tok", "value": "another-secret"}]}]}
+
+os.environ.pop(session.KEY_ENV, None)
+store = session.SessionStore(SDIR)
+try:
+    store.save("supplier", STATE, SUPP, verified_by="the dashboard greeted the owner")
+    unkeyed = "it was written"
+except session.SessionError as e:
+    unkeyed = str(e)
+ok("prof/with no key set, NOTHING is written rather than written in the clear",
+   session.KEY_ENV in unkeyed and not store.names(), unkeyed[:120])
+
+os.environ[session.KEY_ENV] = "a passphrase only the worker has"
+ok("prof/the crypto this needs is actually installed", session.HAVE_CRYPTO)
+
+# An unverified save stores a logged-OUT session under a logged-in name, and looks identical.
+try:
+    store.save("supplier", STATE, SUPP)
+    unver = "it was written"
+except session.SessionError as e:
+    unver = str(e)
+ok("prof/a profile is not saved until the login has been VERIFIED",
+   "VERIFIED" in unver and not store.names(), unver[:120])
+
+summ = store.save("supplier", STATE, SUPP, verified_by="the dashboard greeted the owner")
+ok("prof/a verified profile is stored", store.has("supplier") and summ["connected"])
+ok("prof/and the round trip gives back the same session",
+   store.load("supplier", SUPP) == STATE)
+ok("prof/the file on disk is not readable as text",
+   b"s3cr3t-session-value" not in io.open(os.path.join(SDIR, "supplier.enc"), "rb").read())
+
+# ISOLATION, over the SET of foreign hosts rather than the one example that comes to mind.
+FOREIGN = ("mail.test", "evil.test", "supplier.test.evil.test", "notsupplier.test",
+           "sub.evil.test")
+leaked = []
+for h in FOREIGN:
+    st = {"cookies": [{"name": "SID", "value": "x", "domain": h, "path": "/"}], "origins": []}
+    if not session.foreign_hosts(st, SUPP):
+        leaked.append(h)
+    try:
+        store.save("mix-" + h, st, SUPP, verified_by="x")
+        leaked.append("saved:" + h)
+    except session.SessionError:
+        pass
+ok("prof/NO foreign host can be saved under this profile", not leaked, str(leaked))
+ok("prof/and a host the profile DOES list is not treated as foreign",
+   not session.foreign_hosts(STATE, SUPP))
+
+# The check runs again on the way OUT: a filename is not a permission.
+try:
+    store.load("supplier", MAIL)
+    crossed = "it was loaded"
+except session.SessionError as e:
+    crossed = str(e)
+ok("prof/one portal cannot load another portal's stored session",
+   "NOT" in crossed and "loaded" in crossed, crossed[:140])
+
+# What a screen or an audit row may see. Asserted over every secret value in the state, so a
+# new field added to the summary cannot quietly carry one.
+sm = store.summary("supplier")
+secrets = ["s3cr3t-session-value", "another-secret"]
+ok("prof/the summary carries counts and hosts, and NO secret value",
+   not [s for s in secrets if s in json.dumps(sm)], json.dumps(sm)[:160])
+ok("prof/it says plainly that a stored file does not mean the portal still accepts it",
+   sm["auth"] == "unknown" and "only known when a task uses it" in sm["say"], sm["say"][:90])
+ok("prof/a repr cannot leak the store's contents, because a traceback is a log line",
+   not [s for s in secrets if s in repr(store)], repr(store))
+
+# A wrong key must not be treated as a reason to delete somebody's session.
+os.environ[session.KEY_ENV] = "the wrong passphrase"
+try:
+    store.load("supplier", SUPP)
+    wrong = "it decrypted"
+except session.SessionError as e:
+    wrong = str(e)
+ok("prof/a wrong key is refused and the file is LEFT ALONE",
+   "cannot be decrypted" in wrong and store.has("supplier"), wrong[:120])
+os.environ[session.KEY_ENV] = "a passphrase only the worker has"
+
+store.save("webmail", {"cookies": [{"name": "Y", "value": "v", "domain": "mail.test",
+                                    "path": "/"}], "origins": []},
+           MAIL, verified_by="the inbox loaded")
+gone = store.forget("supplier")
+ok("prof/disconnecting one profile removes exactly that one",
+   gone["ok"] and not store.has("supplier") and store.has("webmail"), str(store.names()))
+ok("prof/and says what the consequence is, rather than just 'ok'",
+   "fresh login" in gone["say"], gone["say"][:80])
+ok("prof/forgetting something that is not there is a refusal, not a silent success",
+   store.forget("supplier")["ok"] is False)
+ok("prof/a profile with nothing to authenticate is not a profile",
+   isinstance(getattr(session, "hosts_in")({"cookies": [], "origins": []}), list)
+   and session.hosts_in({"cookies": [], "origins": []}) == [])
+
+# §5.5 — the signs that a session has gone, over the whole set of them. Each of these is a
+# real page: a login screen, an MFA prompt, a captcha, a "verify it's you".
+SIGNS = ("Sign in to continue", "Please log in", "Your session has expired",
+         "Enter the code we sent you", "Verify it's you", "Two-step verification",
+         "Complete the captcha below")
+blind = [s for s in SIGNS
+         if not session.expiry_signs(s, "https://supplier.test/x", SUPP)[0]]
+ok("expiry/EVERY sign that a session has gone is recognised", not blind, str(blind))
+ok("expiry/a redirect off the profile's own hosts is a sign in its own right",
+   session.expiry_signs("Welcome", "https://login.microsoftonline.test/x", SUPP)[0])
+ok("expiry/and an ordinary page is NOT called expired",
+   not session.expiry_signs("Challans for October 2026", "https://supplier.test/c", SUPP)[0])
+ok("expiry/the reason is in words, so a task record says what was seen",
+   "says" in session.expiry_signs("Please log in", "https://supplier.test/x", SUPP)[1])
+
+shutil.rmtree(SDIR, ignore_errors=True)
 
 # =================================================================== REPORT
 print("\n".join("PASS  " + n for n in PASS))

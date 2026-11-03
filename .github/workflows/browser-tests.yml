@@ -24,7 +24,7 @@ jobs:
           python-version: '3.12'
       - name: Managed Chromium
         run: |
-          python -m pip install --quiet playwright==1.49.1
+          python -m pip install --quiet playwright==1.49.1 cryptography==44.0.0
           python -m playwright install --with-deps chromium
       - name: Targeted tests for the browser core and portal profiles
         run: python browser/test_browser.py
