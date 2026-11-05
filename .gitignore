@@ -4,3 +4,6 @@ mailboxes.json
 *.bak
 mailboxes.json.bak
 _test_downloads/
+_vp/
+browser/
+probe_browser.py
