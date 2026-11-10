@@ -354,12 +354,13 @@ def main():
         print("nothing outstanding. (A mailbox with no firm mapped is left out on purpose.)")
         return 0
 
-    total, failed = 0, 0
+    total, failed, readok = 0, 0, 0
     for mb in boxes:
         try:
             n, f = do_mailbox(mb, creds)
             total += n
             failed += f
+            readok += 0 if f else 1
             # Reported either way: a mailbox that started working again must stop being
             # shown as broken, and only this run knows that it did.
             tell_portal(mb, True)
@@ -369,8 +370,15 @@ def main():
             print("%-16s FAILED: %s" % (mb.get("email", "?"), e))
             tell_portal(mb, False, e)
             failed += 1
-    print("archived %d new message(s); %d mailbox(es) failed" % (total, failed))
-    return 1 if failed and total == 0 else 0
+    # THREE WORDS, AND THE EXIT CODE FOLLOWS THE WORD -- the same change as fetch.py, and
+    # for the same reason: `1 if failed and total == 0 else 0` called a run FAILED when one
+    # mailbox was broken on a quiet day, and called it a success when one was broken on a
+    # busy day, which hid it. A mailbox read with nothing outstanding is a mailbox that
+    # worked.
+    outcome = "SUCCESS" if not failed else ("PARTIAL_SUCCESS" if readok else "FAILED")
+    print("%s: archived %d new message(s); %d of %d mailbox(es) read, %d failed"
+          % (outcome, total, readok, len(boxes), failed))
+    return 1 if outcome == "FAILED" else 0
 
 
 if __name__ == "__main__":

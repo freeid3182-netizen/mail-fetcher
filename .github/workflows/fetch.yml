@@ -58,6 +58,14 @@ jobs:
       #
       # `if: always()` and the script's own refusal to fail: mail is this workflow's job and
       # the sweep is a passenger. A broken sweep must not stop the mail.
+      #
+      # PHASE R. THIS STEP NOW CARRIES TWO MORE PASSENGERS, for the same reason and with the
+      # same key. The Gmail-API mailboxes are read by the portal itself and its only door for
+      # that wants a logged-in session, so that mail advanced while somebody had the Email
+      # page open and at no other time; monitor.py now POSTs the worker's door first. And the
+      # sweep itself now parks browser tasks whose machine has gone quiet -- which was only
+      # ever reached by somebody READING the task list, so with the laptop off and nobody
+      # looking it was correct the instant anybody asked and announced to nobody at all.
       - name: Sweep for things worth noticing
         if: always()
         env:

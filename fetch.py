@@ -186,7 +186,7 @@ def main():
     seen = state.get("seen") or {}
     print("portal holds %s message(s); seen: %s" % (state.get("held"), seen))
 
-    total, failed = 0, 0
+    total, failed, readok = 0, 0, 0
     for cfg in boxes:
         label = cfg.get("box", "?")
         try:
@@ -197,19 +197,28 @@ def main():
                 continue
             if not msgs:
                 print("%-14s nothing new" % label)
+                readok += 1
                 continue
             # Pushed in small batches: one fat POST is what shared hosting drops.
             for i in range(0, len(msgs), 5):
                 r = portal(url, key, "mail_push", {"msgs": msgs[i:i + 5]}, timeout=120)
                 total += int(r.get("added", 0))
             print("%-14s %d new (uid up to %d)" % (label, len(msgs), high))
+            readok += 1
         except Exception as e:
             # One bad mailbox must not stop the others — a wrong app password is common.
             print("%-14s FAILED: %s" % (label, e))
             failed += 1
 
-    print("added %d message(s); %d mailbox(es) failed" % (total, failed))
-    return 1 if failed and total == 0 else 0
+    # THREE WORDS, AND THE EXIT CODE FOLLOWS THE WORD. The old line was
+    # `1 if failed and total == 0 else 0`, which conflated two different runs: a broken
+    # mailbox on a quiet day read as FAILED although the other boxes were read perfectly,
+    # and a broken mailbox on a busy day read as success, which hid it. A mailbox read with
+    # nothing new in it is a mailbox that worked.
+    outcome = "SUCCESS" if not failed else ("PARTIAL_SUCCESS" if readok else "FAILED")
+    print("%s: added %d message(s); %d of %d mailbox(es) read, %d failed"
+          % (outcome, total, readok, len(boxes), failed))
+    return 1 if outcome == "FAILED" else 0
 
 
 if __name__ == "__main__":

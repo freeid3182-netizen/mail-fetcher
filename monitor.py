@@ -50,15 +50,22 @@ import urllib.error
 import urllib.request
 
 
-def portal(url, key, action, timeout=180):
+def portal(url, key, action, timeout=180, post=False):
     # The same two lessons as fetch.py and agent.py, and they were each learned the hard
     # way: a Cloudflare cache sits in front of this portal and will serve an outside caller
     # a copy up to 31 days old unless every call carries its own query; and the host's
     # firewall reads Python's default User-Agent as a bot and answers 403.
+    # POST for a door that DOES something. The portal refuses those as a GET on purpose: a
+    # cache sits in front of this file, and a GET with a side effect is one somebody can
+    # replay out of the cache.
+    hdr = {"X-BL-PUSH": key, "User-Agent": "AtoZ-Monitor/1.0"}
+    if post:
+        hdr["Content-Type"] = "application/json"
     req = urllib.request.Request(
         url + "?action=" + action + "&cb=" + str(int(time.time() * 1000)),
-        headers={"X-BL-PUSH": key, "User-Agent": "AtoZ-Monitor/1.0"},
-        method="GET",
+        data=b"{}" if post else None,
+        headers=hdr,
+        method="POST" if post else "GET",
     )
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8", "replace"))
@@ -70,6 +77,28 @@ def main():
     if not url or not key:
         print("monitor: PORTAL_URL and PUSH_KEY must both be set — skipped")
         return 0
+
+    # PHASE R. THE GMAIL MAILBOXES, WHICH NOTHING UNATTENDED COULD REACH BEFORE THIS.
+    # The IMAP boxes arrive by fetch.py; the Gmail-API ones are read by the portal itself,
+    # and its only door for that needs a logged-in session — so that mail advanced while
+    # somebody had the Email page open and at no other time. This is the worker's door:
+    # POST, the same push key, no parameters, and the portal's own throttle and lock decide
+    # whether a pass actually runs. A failure here is never fatal: it is a passenger on the
+    # mail run, exactly as the sweep below is.
+    try:
+        c = portal(url, key, "mail7_catchup_bg", timeout=120, post=True)
+        if isinstance(c, dict) and c.get("ok"):
+            print("monitor: Gmail catch-up %s%s"
+                  % ("ran, %s message(s) imported" % c.get("imported") if c.get("ran")
+                     else "did not run", " (%s)" % c.get("why") if c.get("why") else ""))
+        else:
+            print("monitor: Gmail catch-up did not report ok. Keys in the reply: %s"
+                  % (",".join(sorted(c.keys())) if isinstance(c, dict) else type(c).__name__))
+    except urllib.error.HTTPError as e:
+        print("monitor: the portal refused the Gmail catch-up: %s %s"
+              % (e.code, e.read()[:200].decode("utf-8", "replace")))
+    except Exception as e:
+        print("monitor: could not reach the portal for the Gmail catch-up: %s" % e)
 
     only = "".join(c for c in os.environ.get("MON_ONLY", "").strip().lower()
                    if c.isalpha())
@@ -100,6 +129,15 @@ def main():
     d = r.get("delivery") or {}
     print("monitor: %s new, %s already known, %s resolved, %s open"
           % (r.get("new"), r.get("already_known"), r.get("resolved"), r.get("open")))
+
+    # PHASE R. The sweep now also notices machines that have gone quiet. Until this, the
+    # parking was reached only by somebody READING the task list, so with the laptop off and
+    # nobody looking it was correct the instant anybody asked and announced to nobody.
+    dev = r.get("devices") or {}
+    if dev.get("moved") or dev.get("stale"):
+        print("monitor: %s task(s) now waiting for a machine that has gone quiet; %s "
+              "machine(s) quiet. Nothing is running and nothing was submitted."
+              % (len(dev.get("moved") or []), len(dev.get("stale") or [])))
 
     # A DETECTOR THAT THREW IS NOT A QUIET DAY. One detector failing leaves the others'
     # findings true and the sweep correctly carries on — but a run that printed "0 new" and
