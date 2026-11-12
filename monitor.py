@@ -149,6 +149,26 @@ def main():
               "machine(s) quiet. Nothing is running and nothing was submitted."
               % (len(dev.get("moved") or []), len(dev.get("stale") or [])))
 
+    # PHASE M. The same sweep now carries out the steps of a request that need no machine --
+    # each one a paid, unattended turn of the assistant. This log is the only place a pass
+    # leaves a trace, so a step that ran, a queue that is backing up and a step that never
+    # reported how it ended are all said here. Counts only: a step's id and what it worked
+    # out stay on the portal, behind a login.
+    cl = r.get("cloud") or {}
+    # OFF IS SAID AS OFF. With the unattended pass switched off (the default) a waiting step
+    # is waiting for its owner to press a button, not for "a later pass" -- and a line that
+    # said the second would send somebody looking for a scheduler fault that is not there.
+    if cl.get("off") and (cl.get("waiting") or cl.get("unknown")):
+        print("monitor: %s step(s) of a request wait for their owner to press 'work this out "
+              "now' -- the unattended pass is switched OFF on this portal, so nothing was run; "
+              "%s never reported how they ended and were NOT run again."
+              % (int(cl.get("waiting") or 0), len(cl.get("unknown") or [])))
+    elif cl.get("ran") or cl.get("unknown") or cl.get("waiting"):
+        print("monitor: %s step(s) of a request worked out by the portal itself; %s more "
+              "waiting for a later pass; %s never reported how they ended and were NOT run "
+              "again." % (len(cl.get("ran") or []), int(cl.get("waiting") or 0),
+                          len(cl.get("unknown") or [])))
+
     # A DETECTOR THAT THREW IS NOT A QUIET DAY. One detector failing leaves the others'
     # findings true and the sweep correctly carries on — but a run that printed "0 new" and
     # nothing else would read as "nothing to report" when it means "one engine is broken".
