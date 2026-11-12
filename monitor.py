@@ -130,6 +130,16 @@ def main():
     print("monitor: %s new, %s already known, %s resolved, %s open"
           % (r.get("new"), r.get("already_known"), r.get("resolved"), r.get("open")))
 
+    # THE OVERFLOW IS SAID OUT LOUD, because the first time it happened nothing said it. The
+    # store kept 200 and the detectors produced 244, so the same 44 findings were created and
+    # discarded on every pass for 44 hours -- and from this log it read as a healthy sweep.
+    # Unresolved findings are no longer discarded; past the cap the surplus is counted, and
+    # the only place a worker run can tell anybody about it is this line.
+    if r.get("over_capacity"):
+        print("monitor: %s unresolved finding(s) past the store's cap. Nothing was "
+              "discarded, but the detectors are producing more than the cap holds."
+              % r.get("over_capacity"))
+
     # PHASE R. The sweep now also notices machines that have gone quiet. Until this, the
     # parking was reached only by somebody READING the task list, so with the laptop off and
     # nobody looking it was correct the instant anybody asked and announced to nobody.
